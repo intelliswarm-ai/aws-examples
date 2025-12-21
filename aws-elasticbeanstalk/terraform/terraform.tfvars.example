@@ -1,0 +1,26 @@
+# ============================================
+# Terraform Variables Example
+# Copy to terraform.tfvars and fill in values
+# ============================================
+
+aws_region   = "eu-central-2"
+environment  = "dev"
+
+# VPC Configuration
+vpc_cidr             = "10.0.0.0/16"
+enable_vpn_gateway   = true
+customer_gateway_ip  = "203.0.113.1"  # Your on-premises VPN endpoint IP
+on_premises_cidr     = "192.168.0.0/16"
+
+# Elastic Beanstalk
+instance_type = "t3.medium"
+min_instances = 1
+max_instances = 4
+
+# Oracle Database (On-Premises)
+database_url      = "jdbc:oracle:thin:@//oracle-dev.company.internal:1521/INVDEV"
+database_username = "inventory_dev"
+database_password = "your-secure-password"
+
+# Monitoring
+alarm_email = "ops@company.com"

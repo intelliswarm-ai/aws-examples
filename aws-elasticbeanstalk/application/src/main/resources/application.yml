@@ -1,0 +1,215 @@
+# ============================================
+# Inventory Management System - Configuration
+# Hybrid Architecture: AWS EB + On-Premises Oracle
+# ============================================
+
+spring:
+  application:
+    name: inventory-management
+
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+
+  # JPA/Hibernate Configuration
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: true
+        jdbc:
+          batch_size: 25
+          batch_versioned_data: true
+        order_inserts: true
+        order_updates: true
+
+  # Flyway Migration
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+
+  # Cache Configuration
+  cache:
+    type: simple
+
+  # Thymeleaf Configuration
+  thymeleaf:
+    cache: true
+    prefix: classpath:/templates/
+    suffix: .html
+
+# Server Configuration
+server:
+  port: ${PORT:8080}
+  servlet:
+    context-path: /
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/html,text/xml,text/plain
+
+# Actuator Configuration
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when_authorized
+  health:
+    db:
+      enabled: true
+
+# Logging Configuration
+logging:
+  level:
+    root: INFO
+    ai.intelliswarm: INFO
+    org.hibernate.SQL: WARN
+    org.hibernate.type.descriptor.sql: WARN
+
+# AWS Configuration
+aws:
+  region: ${AWS_REGION:eu-central-2}
+
+---
+# ============================================
+# LOCAL Profile - H2 Database
+# ============================================
+spring:
+  config:
+    activate:
+      on-profile: local
+
+  datasource:
+    url: jdbc:h2:mem:inventorydb;DB_CLOSE_DELAY=-1;MODE=Oracle
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+
+  flyway:
+    enabled: false
+
+logging:
+  level:
+    ai.intelliswarm: DEBUG
+    org.hibernate.SQL: DEBUG
+
+---
+# ============================================
+# DEV Profile - Oracle On-Premises via VPN
+# ============================================
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+  datasource:
+    url: ${DATABASE_URL:jdbc:oracle:thin:@//oracle-dev.company.internal:1521/INVDEV}
+    driver-class-name: oracle.jdbc.OracleDriver
+    username: ${DATABASE_USERNAME:inventory_dev}
+    password: ${DATABASE_PASSWORD}
+    hikari:
+      connection-timeout: 30000
+      maximum-pool-size: 10
+      minimum-idle: 2
+      idle-timeout: 600000
+      max-lifetime: 1800000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.OracleDialect
+        default_schema: INVENTORY_DEV
+
+logging:
+  level:
+    ai.intelliswarm: DEBUG
+    org.hibernate.SQL: DEBUG
+
+---
+# ============================================
+# STAGING Profile - Oracle On-Premises via VPN
+# ============================================
+spring:
+  config:
+    activate:
+      on-profile: staging
+
+  datasource:
+    url: ${DATABASE_URL:jdbc:oracle:thin:@//oracle-staging.company.internal:1521/INVSTG}
+    driver-class-name: oracle.jdbc.OracleDriver
+    username: ${DATABASE_USERNAME:inventory_stg}
+    password: ${DATABASE_PASSWORD}
+    hikari:
+      connection-timeout: 30000
+      maximum-pool-size: 20
+      minimum-idle: 5
+      idle-timeout: 300000
+      max-lifetime: 1200000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.OracleDialect
+        default_schema: INVENTORY_STG
+
+---
+# ============================================
+# PROD Profile - Oracle On-Premises via Direct Connect
+# ============================================
+spring:
+  config:
+    activate:
+      on-profile: prod
+
+  datasource:
+    url: ${DATABASE_URL:jdbc:oracle:thin:@//oracle-prod.company.internal:1521/INVPRD}
+    driver-class-name: oracle.jdbc.OracleDriver
+    username: ${DATABASE_USERNAME:inventory_prd}
+    password: ${DATABASE_PASSWORD}
+    hikari:
+      connection-timeout: 20000
+      maximum-pool-size: 30
+      minimum-idle: 10
+      idle-timeout: 180000
+      max-lifetime: 900000
+      leak-detection-threshold: 60000
+
+  jpa:
+    hibernate:
+      ddl-auto: none
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.OracleDialect
+        default_schema: INVENTORY_PRD
+        generate_statistics: false
+
+  thymeleaf:
+    cache: true
+
+logging:
+  level:
+    root: WARN
+    ai.intelliswarm: INFO
+    org.hibernate.SQL: WARN
