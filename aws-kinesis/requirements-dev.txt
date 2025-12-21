@@ -1,0 +1,18 @@
+# GPS Tracking System - Development Dependencies
+
+# Testing
+pytest>=8.0.0
+pytest-cov>=4.1.0
+pytest-asyncio>=0.23.0
+moto[kinesis,dynamodb,s3,sns]>=5.0.0
+
+# Code Quality
+ruff>=0.8.0
+mypy>=1.13.0
+black>=24.0.0
+
+# Type Stubs
+types-boto3>=1.0.0
+
+# Development
+ipython>=8.0.0

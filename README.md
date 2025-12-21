@@ -9,6 +9,7 @@ A collection of AWS serverless architecture prototypes demonstrating best practi
 | [aws-lambda](./aws-lambda) | Task Automation System | Java 21 | Lambda, SQS, DynamoDB, Step Functions |
 | [aws-ml](./aws-ml) | Intelligent Document Processing | Python 3.12 | SageMaker, Bedrock, Textract, Comprehend |
 | [aws-serverless](./aws-serverless) | Multi-Tenant SaaS Platform (intelliswarm.ai) | Python 3.12 | Cognito, WAF, KMS, VPC, Bedrock, CloudTrail |
+| [aws-kinesis](./aws-kinesis) | Real-Time GPS Tracking System | Python 3.12 | Kinesis Data Streams, Lambda, DynamoDB, S3 |
 
 ---
 
@@ -118,6 +119,48 @@ cd aws-serverless
 
 ---
 
+## aws-kinesis
+
+**Real-Time GPS Tracking System** - A streaming data platform for delivery truck GPS tracking with multiple consumers.
+
+### Use Case
+A company tracking GPS coordinates from delivery trucks in real-time. Coordinates are transmitted every 5 seconds, processed by multiple consumers, and aggregated for reporting.
+
+### Architecture Highlights
+- **Kinesis Data Streams** for high-throughput, real-time data ingestion
+- **Multiple Consumers** processing the same stream:
+  - Dashboard Consumer - Updates DynamoDB with latest truck positions
+  - Geofence Consumer - Detects boundary crossings, publishes SNS alerts
+  - Archive Consumer - Stores historical data in S3 for analytics
+- **EventBridge** scheduled GPS producer (simulator)
+- **DynamoDB** for current positions and geofence definitions
+- **S3** with lifecycle policies for historical data archival
+
+### Tech Stack
+- Python 3.12 with type hints
+- Pydantic for data validation
+- AWS Lambda Powertools (logging, tracing, metrics)
+- Haversine formula for distance/geofence calculations
+- Terraform modular infrastructure (7 modules)
+
+### Key Features
+- **Partition Key Design** - truck_id ensures ordered processing per truck
+- **Fan-Out Pattern** - Multiple Lambda consumers from single stream
+- **Geofence Detection** - Circle/polygon boundary detection with enter/exit alerts
+- **Data Aggregation** - Per-truck statistics (distance, speed, idle time)
+- **S3 Lifecycle** - Automatic tiering to IA/Glacier for cost optimization
+
+### Quick Start
+```bash
+cd aws-kinesis
+./scripts/build.sh
+./scripts/deploy.sh
+```
+
+[View full documentation](./aws-kinesis/README.md)
+
+---
+
 ## Common Patterns
 
 All projects demonstrate:
@@ -203,10 +246,16 @@ aws-prototypes/
 │   ├── terraform/            # Infrastructure
 │   ├── scripts/              # Build/deploy scripts
 │   └── README.md
-└── aws-serverless/           # Enterprise API Platform
+├── aws-serverless/           # Enterprise API Platform
+│   ├── src/                  # Python Lambda source
+│   ├── terraform/            # Infrastructure
+│   ├── environments/         # Dev/staging/prod configs
+│   ├── scripts/              # Build/deploy scripts
+│   └── README.md
+└── aws-kinesis/              # Real-Time GPS Tracking
     ├── src/                  # Python Lambda source
-    ├── terraform/            # Infrastructure
-    ├── environments/         # Dev/staging/prod configs
+    ├── terraform/            # Infrastructure (7 modules)
+    ├── tests/                # Unit and integration tests
     ├── scripts/              # Build/deploy scripts
     └── README.md
 ```
