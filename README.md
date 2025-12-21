@@ -1,4 +1,4 @@
-# AWS Prototypes
+# AWS Examples
 
 A collection of AWS architecture prototypes demonstrating best practices for cloud-native and hybrid application development. Each project showcases different AWS services, patterns, and implementation approaches including serverless, PaaS, and hybrid cloud architectures.
 
