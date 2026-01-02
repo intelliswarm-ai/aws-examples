@@ -400,6 +400,200 @@ For predictable workloads, consider:
 
 ---
 
+## Enterprise In-House Cost Comparison
+
+Building an equivalent data lake analytics platform in-house requires significant infrastructure, software, and personnel investments. This section compares the AWS serverless approach with a traditional on-premises solution.
+
+### In-House Infrastructure Costs
+
+#### 1. Hardware Infrastructure (~$25,000/month)
+
+| Component | Specification | Monthly Cost |
+|-----------|---------------|--------------|
+| Hadoop/Spark Cluster | 10-node cluster (32 cores, 128GB RAM each) | $12,000 |
+| Storage Arrays | 100TB NAS/SAN with RAID, replication | $6,500 |
+| Network Equipment | 10GbE switches, load balancers | $2,000 |
+| Backup Systems | Tape library, off-site replication | $2,500 |
+| Hardware Refresh Reserve | 3-year depreciation fund | $2,000 |
+| **Infrastructure Subtotal** | | **$25,000** |
+
+#### 2. Data Center/Facilities (~$8,000/month)
+
+| Item | Monthly Cost |
+|------|--------------|
+| Rack Space (co-location) | $3,500 |
+| Power & Cooling | $2,500 |
+| Physical Security | $800 |
+| Internet Connectivity (redundant) | $1,200 |
+| **Facilities Subtotal** | **$8,000** |
+
+#### 3. Software Licensing (~$20,000/month)
+
+| Software | Description | Monthly Cost |
+|----------|-------------|--------------|
+| Cloudera Data Platform | Enterprise Hadoop/Spark distribution | $10,000 |
+| Tableau/Power BI Enterprise | BI and visualization (25 users) | $3,500 |
+| Presto/Trino Enterprise | SQL query engine support | $2,500 |
+| Monitoring Tools | Datadog/Splunk enterprise | $2,000 |
+| Security & Compliance | Encryption, audit tools | $2,000 |
+| **Software Subtotal** | | **$20,000** |
+
+#### 4. Personnel Costs (~$65,000/month)
+
+| Role | FTE | Annual Salary | Monthly Cost |
+|------|-----|---------------|--------------|
+| Senior Data Engineer | 1.5 | $150,000 | $18,750 |
+| Data Analyst | 1.0 | $120,000 | $10,000 |
+| DevOps/Platform Engineer | 1.0 | $140,000 | $11,667 |
+| DBA/Data Platform Admin | 0.5 | $130,000 | $5,417 |
+| Benefits & Overhead (35%) | - | - | $16,042 |
+| Training & Certifications | - | - | $3,124 |
+| **Personnel Subtotal** | **4 FTE** | | **$65,000** |
+
+### In-House Monthly Cost Summary
+
+| Category | Monthly Cost |
+|----------|--------------|
+| Hardware Infrastructure | $25,000 |
+| Data Center/Facilities | $8,000 |
+| Software Licensing | $20,000 |
+| Personnel | $65,000 |
+| Contingency (5%) | $5,900 |
+| **Total In-House Monthly** | **$123,900** |
+
+---
+
+### AWS vs In-House Cost Comparison
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│              Monthly Cost Comparison: AWS vs In-House                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  SCENARIO: Medium (Base Case - 36GB/month, 500 queries/day)                 │
+│                                                                             │
+│  AWS Serverless    [$58]                                                    │
+│  ████                                                                       │
+│                                                                             │
+│  In-House          [$123,900]                                               │
+│  ████████████████████████████████████████████████████████████████████████   │
+│                                                                             │
+│  ──────────────────────────────────────────────────────────────────────     │
+│  Cost Ratio: In-House is ~2,130x more expensive                             │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  SCENARIO: Large (Enterprise - 360GB/month, 5,000 queries/day)              │
+│                                                                             │
+│  AWS Serverless    [$400]                                                   │
+│  ████                                                                       │
+│                                                                             │
+│  In-House          [$123,900]                                               │
+│  ████████████████████████████████████████████████████████████████████████   │
+│                                                                             │
+│  ──────────────────────────────────────────────────────────────────────     │
+│  Cost Ratio: In-House is ~310x more expensive                               │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  SCENARIO: Very Large (Big Data - 3.6TB/month, 50,000 queries/day)          │
+│                                                                             │
+│  AWS Serverless    [$3,000]                                                 │
+│  ████████████████████████                                                   │
+│                                                                             │
+│  In-House          [$123,900]                                               │
+│  ████████████████████████████████████████████████████████████████████████   │
+│                                                                             │
+│  ──────────────────────────────────────────────────────────────────────     │
+│  Cost Ratio: In-House is ~41x more expensive                                │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Scaling Comparison
+
+| Factor | AWS Serverless | In-House |
+|--------|---------------|----------|
+| **Scale Up Time** | Minutes (automatic) | Weeks to months |
+| **Scale Down** | Automatic, pay-per-use | Fixed costs remain |
+| **Storage Expansion** | Unlimited, instant | Hardware procurement cycle |
+| **Geographic Expansion** | Deploy to any region | New data center required |
+| **Peak Load Handling** | Elastic auto-scaling | Over-provision or degrade |
+| **Minimum Commitment** | None | 3-year hardware depreciation |
+
+#### Scaling Cost Comparison
+
+| Scale Factor | AWS Monthly | In-House Monthly | AWS Advantage |
+|--------------|-------------|------------------|---------------|
+| 1x (Base) | $58 | $123,900 | 2,136x cheaper |
+| 10x | $580 | $135,000* | 233x cheaper |
+| 100x | $5,800 | $250,000** | 43x cheaper |
+| 1000x | $58,000 | $1,500,000*** | 26x cheaper |
+
+*Requires additional storage arrays
+**Requires cluster expansion
+***Requires new data center
+
+### Time-to-Market Comparison
+
+| Milestone | AWS Serverless | In-House |
+|-----------|---------------|----------|
+| Initial setup | 1-2 days | 3-6 months |
+| First query | < 1 hour | 2-4 months |
+| Production ready | 1-2 weeks | 6-12 months |
+| Add new data source | Hours | 2-4 weeks |
+| Schema changes | Minutes | Days to weeks |
+| Disaster recovery | Built-in | 2-3 months additional |
+| Compliance certification | Inherited | 6-12 months |
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                    Time-to-Production Comparison                           │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  AWS Serverless (1-2 weeks)                                                │
+│  ████                                                                      │
+│                                                                            │
+│  In-House (6-12 months)                                                    │
+│  ████████████████████████████████████████████████████████████████████████  │
+│                                                                            │
+│  AWS is 25-50x faster to production                                        │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+### When In-House Might Make Sense
+
+While AWS serverless is significantly more cost-effective for most scenarios, in-house solutions may be justified when:
+
+1. **Existing Hadoop Investment**
+   - Organization already has significant Hadoop/Spark infrastructure
+   - Sunk costs in hardware with remaining useful life
+   - Existing team expertise that would otherwise be unutilized
+
+2. **Extreme Data Volume (Petabyte Scale)**
+   - Data volumes exceeding 10+ PB with continuous processing
+   - At extreme scale, AWS data transfer costs can become significant
+   - Break-even point: typically 50+ PB with heavy compute requirements
+
+3. **Regulatory Requirements**
+   - Strict data sovereignty laws requiring on-premises storage
+   - Industries with air-gapped network requirements
+   - Government/defense contracts mandating on-premises solutions
+
+4. **Predictable, Steady-State Workloads**
+   - 24/7 heavy utilization (>80% constant load)
+   - No scaling requirements
+   - Multi-year cost analysis favors owned infrastructure
+
+5. **Specialized Hardware Requirements**
+   - GPU clusters for ML training already in place
+   - Custom FPGA or ASIC requirements
+   - Specialized network configurations
+
+> **Recommendation**: Even with existing Hadoop investments, consider a hybrid approach where new workloads run on AWS while legacy systems are gradually migrated. This provides immediate cost savings on growth while maximizing existing infrastructure ROI.
+
+---
+
 ## Recommendations
 
 1. **Use Glue Flex** for all non-time-critical ETL jobs (50% savings)

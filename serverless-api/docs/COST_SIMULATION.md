@@ -282,6 +282,140 @@ This document provides a detailed cost simulation for running the AWS Lambda Tas
 
 ---
 
+## Enterprise In-House Cost Comparison
+
+Building an equivalent task automation system in-house requires significant investment in infrastructure, personnel, and ongoing maintenance. This section compares AWS serverless costs against traditional on-premises deployment.
+
+### 1. Infrastructure Costs
+
+| Component | Specification | Monthly Cost (USD) |
+|-----------|---------------|-------------------|
+| Application Servers (2x) | 16 vCPU, 64 GB RAM each | $3,200 |
+| Message Queue Cluster | RabbitMQ/ActiveMQ (3-node HA) | $1,800 |
+| Database Servers (2x) | PostgreSQL HA with replication | $2,400 |
+| Load Balancer | Hardware or virtual appliance | $600 |
+| **Infrastructure Subtotal** | | **$8,000** |
+
+### 2. Data Center / Facilities Costs
+
+| Component | Monthly Cost (USD) |
+|-----------|-------------------|
+| Rack Space / Colocation | $1,500 |
+| Power & Cooling | $1,200 |
+| Network Bandwidth (1 Gbps) | $800 |
+| Physical Security & Access | $500 |
+| **Facilities Subtotal** | **$4,000** |
+
+### 3. Software Licensing
+
+| Software | Purpose | Monthly Cost (USD) |
+|----------|---------|-------------------|
+| Workflow Engine | Camunda/Temporal Enterprise | $2,500 |
+| Monitoring Suite | Datadog/Splunk/New Relic | $2,000 |
+| Database Licenses | Enterprise PostgreSQL Support | $800 |
+| Security Tools | WAF, vulnerability scanning | $700 |
+| **Licensing Subtotal** | | **$6,000** |
+
+### 4. Personnel Costs
+
+| Role | FTE | Monthly Cost (USD) |
+|------|-----|-------------------|
+| Senior Java Developers | 1.5 | $22,500 |
+| DevOps/Platform Engineer | 0.5 | $8,500 |
+| DBA (part-time) | 0.25 | $5,000 |
+| Security Engineer (part-time) | 0.25 | $4,000 |
+| **Personnel Subtotal** | **2.5 FTE** | **$40,000** |
+
+> Note: Costs include salary, benefits, and overhead. Based on mid-tier tech hub rates.
+
+### 5. Total In-House Monthly Cost Summary
+
+| Category | Monthly Cost (USD) | % of Total |
+|----------|-------------------|------------|
+| Infrastructure | $8,000 | 13.8% |
+| Data Center/Facilities | $4,000 | 6.9% |
+| Software Licensing | $6,000 | 10.3% |
+| Personnel | $40,000 | 69.0% |
+| **TOTAL IN-HOUSE** | **$58,000** | 100% |
+
+Rounded estimate: **~$60,000/month**
+
+### 6. AWS Serverless vs In-House Cost Comparison
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│            Monthly Cost Comparison: AWS Serverless vs In-House           │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  Cost Scale (USD)                                                        │
+│  ────────────────                                                        │
+│                                                                          │
+│  $60,000 ┤                              ████████████████████████████████ │
+│          │                              █   IN-HOUSE: ~$58,000/mo      █ │
+│  $50,000 ┤                              ████████████████████████████████ │
+│          │                                                               │
+│  $40,000 ┤                              Personnel: $40,000 (69%)         │
+│          │                                                               │
+│  $30,000 ┤                                                               │
+│          │                                                               │
+│  $20,000 ┤                                                               │
+│          │                              Infrastructure: $8,000 (14%)     │
+│  $10,000 ┤                              Licensing: $6,000 (10%)          │
+│          │                              Facilities: $4,000 (7%)          │
+│     $500 ┤                                                               │
+│      $30 ┤ ██                                                            │
+│          │ █ AWS SERVERLESS: ~$30/mo                                     │
+│       $0 ┴─────────────────────────────────────────────────────────────  │
+│            AWS                          IN-HOUSE                         │
+│                                                                          │
+│  ════════════════════════════════════════════════════════════════════    │
+│  COST RATIO: In-House is approximately 2,000x more expensive             │
+│  ANNUAL SAVINGS WITH AWS: ~$695,000                                      │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### 7. Time-to-Market Comparison
+
+| Milestone | AWS Serverless | In-House |
+|-----------|---------------|----------|
+| Initial Setup | 1-2 days | 4-6 weeks |
+| Development Environment | Hours | 1-2 weeks |
+| Production Deployment | 1 week | 2-3 months |
+| Full Feature Parity | 2-4 weeks | 6-12 months |
+| **Total Time-to-Market** | **2-4 weeks** | **6-12 months** |
+
+**Hidden Time Costs of In-House:**
+- Hardware procurement and provisioning: 2-4 weeks
+- Network configuration and security hardening: 1-2 weeks
+- Hiring and onboarding personnel: 2-3 months
+- Building monitoring and alerting: 2-4 weeks
+- Disaster recovery setup: 2-4 weeks
+
+### 8. When In-House Might Make Sense
+
+Despite the significant cost difference, in-house deployment may be justified in these scenarios:
+
+| Scenario | Rationale |
+|----------|-----------|
+| **Regulatory Compliance** | Strict data residency requirements that AWS regions cannot satisfy |
+| **Existing Infrastructure** | Sunk costs in data centers with available capacity |
+| **Extreme Scale** | Processing millions of tasks/day where serverless costs scale linearly |
+| **Specialized Hardware** | Requirements for GPUs, FPGAs, or custom hardware |
+| **Predictable Workloads** | 24/7 consistent load where reserved capacity is optimal |
+| **Security Mandates** | Air-gapped environments or classified workloads |
+| **Vendor Lock-in Concerns** | Strategic decision to maintain cloud independence |
+
+**Break-Even Analysis:**
+
+At the Enterprise tier (100,000 tasks/day), AWS costs ~$1,500/month. In-house would need to:
+- Process **40x more volume** to approach cost parity
+- Maintain **99.9% uptime** without additional investment
+- Achieve this scale **within 6 months** to offset initial setup time
+
+> **Conclusion:** For most task automation workloads under 1M tasks/day, AWS serverless provides 100-2000x cost advantage with faster time-to-market and reduced operational burden.
+
+---
+
 ## Recommendations
 
 1. **Use SnapStart** for Java Lambda functions 

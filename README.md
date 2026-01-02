@@ -6,20 +6,91 @@ A collection of AWS architecture examples demonstrating best practices for cloud
 
 | Project | Description | Language | Key AWS Services | Business Logic |
 |---------|-------------|----------|------------------|----------------|
-| [aws-lambda](./aws-lambda) | Task Automation System | Java 21 | Lambda, SQS, DynamoDB, Step Functions | [docs](./aws-lambda/docs/BUSINESS_LOGIC.md) |
-| [aws-ml](./aws-ml) | Intelligent Document Processing | Python 3.12 | SageMaker, Bedrock, Textract, Comprehend | [docs](./aws-ml/docs/BUSINESS_LOGIC.md) |
-| [aws-serverless](./aws-serverless) | Multi-Tenant SaaS Platform (intelliswarm.ai) | Python 3.12 | Cognito, WAF, KMS, VPC, Bedrock, CloudTrail | [docs](./aws-serverless/docs/BUSINESS_LOGIC.md) |
-| [aws-kinesis](./aws-kinesis) | Real-Time GPS Tracking System | Python 3.12 | Kinesis Data Streams, Lambda, DynamoDB, S3 | [docs](./aws-kinesis/docs/BUSINESS_LOGIC.md) |
-| [aws-sms](./aws-sms) | SMS Marketing Campaign Platform | Python 3.12 | Pinpoint, Kinesis, Lambda, DynamoDB, S3 | [docs](./aws-sms/docs/BUSINESS_LOGIC.md) |
-| [aws-sqs](./aws-sqs) | Online Banking Platform with SQS Auto Scaling | Python 3.12 | SQS, EC2 Auto Scaling, DynamoDB, CloudWatch | [docs](./aws-sqs/docs/BUSINESS_LOGIC.md) |
-| [aws-call-sentiment](./aws-call-sentiment) | Call Center Sentiment Analysis | Python 3.12 | Comprehend, OpenSearch, Lambda, S3, API Gateway | [docs](./aws-call-sentiment/docs/BUSINESS_LOGIC.md) |
-| [aws-lex](./aws-lex) | Airline Chatbot Platform | Python 3.12 | Lex V2, Lambda, DynamoDB, API Gateway | [docs](./aws-lex/docs/BUSINESS_LOGIC.md) |
-| [aws-athena](./aws-athena) | Data Lake Analytics Platform | Python 3.12 | Athena, Glue, Lake Formation, S3 | [docs](./aws-athena/docs/BUSINESS_LOGIC.md) |
-| [aws-elasticbeanstalk](./aws-elasticbeanstalk) | Hybrid Enterprise Inventory System | Java 21 | Elastic Beanstalk, VPN Gateway, S3, CloudWatch | [docs](./aws-elasticbeanstalk/docs/BUSINESS_LOGIC.md) |
+| [serverless-api](./serverless-api) | Task Automation System | Java 21 | Lambda, SQS, DynamoDB, Step Functions | [docs](./serverless-api/docs/BUSINESS_LOGIC.md) |
+| [document-processing](./document-processing) | Intelligent Document Processing | Python 3.12 | SageMaker, Bedrock, Textract, Comprehend | [docs](./document-processing/docs/BUSINESS_LOGIC.md) |
+| [multi-tenant-saas](./multi-tenant-saas) | Multi-Tenant SaaS Platform (intelliswarm.ai) | Python 3.12 | Cognito, WAF, KMS, VPC, Bedrock, CloudTrail | [docs](./multi-tenant-saas/docs/BUSINESS_LOGIC.md) |
+| [fleet-tracking](./fleet-tracking) | Real-Time GPS Tracking System | Python 3.12 | Kinesis Data Streams, Lambda, DynamoDB, S3 | [docs](./fleet-tracking/docs/BUSINESS_LOGIC.md) |
+| [messaging-platform](./messaging-platform) | SMS Marketing Campaign Platform | Python 3.12 | Pinpoint, Kinesis, Lambda, DynamoDB, S3 | [docs](./messaging-platform/docs/BUSINESS_LOGIC.md) |
+| [banking-transactions](./banking-transactions) | Online Banking Platform with SQS Auto Scaling | Python 3.12 | SQS, EC2 Auto Scaling, DynamoDB, CloudWatch | [docs](./banking-transactions/docs/BUSINESS_LOGIC.md) |
+| [call-center-analytics](./call-center-analytics) | Call Center Sentiment Analysis | Python 3.12 | Comprehend, OpenSearch, Lambda, S3, API Gateway | [docs](./call-center-analytics/docs/BUSINESS_LOGIC.md) |
+| [conversational-ai](./conversational-ai) | Airline Chatbot Platform | Python 3.12 | Lex V2, Lambda, DynamoDB, API Gateway | [docs](./conversational-ai/docs/BUSINESS_LOGIC.md) |
+| [data-lake-analytics](./data-lake-analytics) | Data Lake Analytics Platform | Python 3.12 | Athena, Glue, Lake Formation, S3 | [docs](./data-lake-analytics/docs/BUSINESS_LOGIC.md) |
+| [hybrid-enterprise-app](./hybrid-enterprise-app) | Hybrid Enterprise Inventory System | Java 21 | Elastic Beanstalk, VPN Gateway, S3, CloudWatch | [docs](./hybrid-enterprise-app/docs/BUSINESS_LOGIC.md) |
 
 ---
 
-## aws-lambda
+## Technology Quick Reference
+
+Find projects by AWS service for quick navigation:
+
+### Compute & Serverless
+
+| Service | Projects |
+|---------|----------|
+| **Lambda** | [serverless-api](./serverless-api), [document-processing](./document-processing), [multi-tenant-saas](./multi-tenant-saas), [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform), [banking-transactions](./banking-transactions), [call-center-analytics](./call-center-analytics), [conversational-ai](./conversational-ai), [data-lake-analytics](./data-lake-analytics) |
+| **Elastic Beanstalk** | [hybrid-enterprise-app](./hybrid-enterprise-app) |
+| **EC2 Auto Scaling** | [banking-transactions](./banking-transactions) |
+| **Step Functions** | [serverless-api](./serverless-api), [document-processing](./document-processing) |
+
+### Messaging & Streaming
+
+| Service | Projects |
+|---------|----------|
+| **SQS** | [serverless-api](./serverless-api), [banking-transactions](./banking-transactions) |
+| **SNS** | [serverless-api](./serverless-api), [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform) |
+| **Kinesis Data Streams** | [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform) |
+| **EventBridge** | [serverless-api](./serverless-api), [fleet-tracking](./fleet-tracking) |
+| **Pinpoint** | [messaging-platform](./messaging-platform) |
+
+### Databases & Storage
+
+| Service | Projects |
+|---------|----------|
+| **DynamoDB** | [serverless-api](./serverless-api), [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform), [banking-transactions](./banking-transactions), [conversational-ai](./conversational-ai) |
+| **S3** | [document-processing](./document-processing), [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform), [call-center-analytics](./call-center-analytics), [data-lake-analytics](./data-lake-analytics), [hybrid-enterprise-app](./hybrid-enterprise-app) |
+| **OpenSearch** | [call-center-analytics](./call-center-analytics) |
+
+### AI/ML Services
+
+| Service | Projects |
+|---------|----------|
+| **Bedrock (Claude)** | [document-processing](./document-processing), [multi-tenant-saas](./multi-tenant-saas) |
+| **Comprehend** | [document-processing](./document-processing), [call-center-analytics](./call-center-analytics) |
+| **Lex V2** | [conversational-ai](./conversational-ai) |
+| **SageMaker** | [document-processing](./document-processing) |
+| **Textract** | [document-processing](./document-processing) |
+| **Rekognition** | [document-processing](./document-processing) |
+| **Transcribe** | [document-processing](./document-processing) |
+
+### Analytics & Data Lake
+
+| Service | Projects |
+|---------|----------|
+| **Athena** | [data-lake-analytics](./data-lake-analytics) |
+| **Glue ETL** | [data-lake-analytics](./data-lake-analytics) |
+| **Lake Formation** | [data-lake-analytics](./data-lake-analytics) |
+
+### Security & Identity
+
+| Service | Projects |
+|---------|----------|
+| **Cognito** | [multi-tenant-saas](./multi-tenant-saas) |
+| **WAF** | [multi-tenant-saas](./multi-tenant-saas) |
+| **KMS** | [multi-tenant-saas](./multi-tenant-saas) |
+| **Secrets Manager** | [multi-tenant-saas](./multi-tenant-saas) |
+| **CloudTrail** | [multi-tenant-saas](./multi-tenant-saas) |
+
+### Networking & Hybrid
+
+| Service | Projects |
+|---------|----------|
+| **API Gateway** | [banking-transactions](./banking-transactions), [call-center-analytics](./call-center-analytics), [conversational-ai](./conversational-ai) |
+| **VPC** | [multi-tenant-saas](./multi-tenant-saas) |
+| **VPN Gateway** | [hybrid-enterprise-app](./hybrid-enterprise-app) |
+
+---
+
+## serverless-api
 
 **Task Automation System** - A serverless task processing pipeline demonstrating core Lambda patterns.
 
@@ -38,16 +109,16 @@ A collection of AWS architecture examples demonstrating best practices for cloud
 
 ### Quick Start
 ```bash
-cd aws-lambda
+cd serverless-api
 ./scripts/build.sh
 ./scripts/deploy.sh
 ```
 
-[View full documentation](./aws-lambda/README.md) | [Business Logic](./aws-lambda/docs/BUSINESS_LOGIC.md)
+[View full documentation](./serverless-api/README.md) | [Business Logic](./serverless-api/docs/BUSINESS_LOGIC.md)
 
 ---
 
-## aws-ml
+## document-processing
 
 **Intelligent Document Processing Platform** - A full ML pipeline demonstrating AWS AI/ML services.
 
@@ -70,16 +141,16 @@ cd aws-lambda
 
 ### Quick Start
 ```bash
-cd aws-ml
+cd document-processing
 ./scripts/build.sh
 ./scripts/deploy.sh
 ```
 
-[View full documentation](./aws-ml/README.md) | [Business Logic](./aws-ml/docs/BUSINESS_LOGIC.md)
+[View full documentation](./document-processing/README.md) | [Business Logic](./document-processing/docs/BUSINESS_LOGIC.md)
 
 ---
 
-## aws-serverless
+## multi-tenant-saas
 
 **Multi-Tenant SaaS Platform for intelliswarm.ai** - GenAI-powered email and CRM intelligence solution for enterprises of 50-10,000 employees.
 
@@ -116,16 +187,16 @@ cd aws-ml
 
 ### Quick Start
 ```bash
-cd aws-serverless
+cd multi-tenant-saas
 ./scripts/build.sh
 ./scripts/deploy.sh --env dev
 ```
 
-[View full documentation](./aws-serverless/README.md) | [Business Logic](./aws-serverless/docs/BUSINESS_LOGIC.md)
+[View full documentation](./multi-tenant-saas/README.md) | [Business Logic](./multi-tenant-saas/docs/BUSINESS_LOGIC.md)
 
 ---
 
-## aws-kinesis
+## fleet-tracking
 
 **Real-Time GPS Tracking System** - A streaming data platform for delivery truck GPS tracking with multiple consumers.
 
@@ -158,16 +229,16 @@ A company tracking GPS coordinates from delivery trucks in real-time. Coordinate
 
 ### Quick Start
 ```bash
-cd aws-kinesis
+cd fleet-tracking
 ./scripts/build.sh
 ./scripts/deploy.sh
 ```
 
-[View full documentation](./aws-kinesis/README.md) | [Business Logic](./aws-kinesis/docs/BUSINESS_LOGIC.md)
+[View full documentation](./fleet-tracking/README.md) | [Business Logic](./fleet-tracking/docs/BUSINESS_LOGIC.md)
 
 ---
 
-## aws-sms
+## messaging-platform
 
 **SMS Marketing Campaign Platform** - A two-way SMS marketing system with subscriber response processing and analytics.
 
@@ -199,16 +270,16 @@ A mobile app sending one-time confirmation messages and multi-engagement marketi
 
 ### Quick Start
 ```bash
-cd aws-sms
+cd messaging-platform
 ./scripts/build.sh
 ./scripts/deploy.sh
 ```
 
-[View full documentation](./aws-sms/README.md) | [Business Logic](./aws-sms/docs/BUSINESS_LOGIC.md)
+[View full documentation](./messaging-platform/README.md) | [Business Logic](./messaging-platform/docs/BUSINESS_LOGIC.md)
 
 ---
 
-## aws-sqs
+## banking-transactions
 
 **Online Banking Platform with EC2 Auto Scaling** - A distributed system architecture using SQS-based scaling for transaction processing.
 
@@ -239,16 +310,16 @@ A commercial bank's next-generation online banking platform with highly variable
 
 ### Quick Start
 ```bash
-cd aws-sqs
+cd banking-transactions
 ./scripts/build.sh
 ./scripts/deploy.sh -e dev
 ```
 
-[View full documentation](./aws-sqs/README.md) | [Business Logic](./aws-sqs/docs/BUSINESS_LOGIC.md)
+[View full documentation](./banking-transactions/README.md) | [Business Logic](./banking-transactions/docs/BUSINESS_LOGIC.md)
 
 ---
 
-## aws-call-sentiment
+## call-center-analytics
 
 **Call Center Sentiment Analysis Platform** - Analyze customer service call transcripts using Amazon Comprehend with OpenSearch visualization.
 
@@ -280,16 +351,16 @@ A company analyzing customer service calls to identify satisfaction trends, moni
 
 ### Quick Start
 ```bash
-cd aws-call-sentiment
+cd call-center-analytics
 ./scripts/build.sh
 ./scripts/deploy.sh -e dev
 ```
 
-[View full documentation](./aws-call-sentiment/README.md) | [Business Logic](./aws-call-sentiment/docs/BUSINESS_LOGIC.md)
+[View full documentation](./call-center-analytics/README.md) | [Business Logic](./call-center-analytics/docs/BUSINESS_LOGIC.md)
 
 ---
 
-## aws-lex
+## conversational-ai
 
 **Airline Chatbot Platform** - A conversational AI chatbot for flight bookings, booking updates, and check-ins using Amazon Lex.
 
@@ -319,16 +390,16 @@ An airline company wants to reduce call center volume by automating common reque
 
 ### Quick Start
 ```bash
-cd aws-lex
+cd conversational-ai
 ./scripts/build.sh
 ./scripts/deploy.sh -e dev
 ```
 
-[View full documentation](./aws-lex/README.md) | [Business Logic](./aws-lex/docs/BUSINESS_LOGIC.md)
+[View full documentation](./conversational-ai/README.md) | [Business Logic](./conversational-ai/docs/BUSINESS_LOGIC.md)
 
 ---
 
-## aws-athena
+## data-lake-analytics
 
 **Data Lake Analytics Platform** - A serverless data lake with AWS Glue ETL, Lake Formation security, and Amazon Athena for high-performance analytics.
 
@@ -360,16 +431,16 @@ An application loading hundreds of JSON documents into Amazon S3 every hour. The
 
 ### Quick Start
 ```bash
-cd aws-athena
+cd data-lake-analytics
 ./scripts/build.sh
 ./scripts/deploy.sh
 ```
 
-[View full documentation](./aws-athena/README.md) | [Business Logic](./aws-athena/docs/BUSINESS_LOGIC.md)
+[View full documentation](./data-lake-analytics/README.md) | [Business Logic](./data-lake-analytics/docs/BUSINESS_LOGIC.md)
 
 ---
 
-## aws-elasticbeanstalk
+## hybrid-enterprise-app
 
 **Hybrid Enterprise Inventory System** - A migrated full-stack Java application running on AWS Elastic Beanstalk with hybrid connectivity to an on-premises Oracle database.
 
@@ -401,12 +472,12 @@ A company migrating their legacy on-premises inventory management system to AWS.
 
 ### Quick Start
 ```bash
-cd aws-elasticbeanstalk
+cd hybrid-enterprise-app
 ./scripts/build.sh
 ./scripts/deploy.sh -e dev
 ```
 
-[View full documentation](./aws-elasticbeanstalk/README.md) | [Business Logic](./aws-elasticbeanstalk/docs/BUSINESS_LOGIC.md)
+[View full documentation](./hybrid-enterprise-app/README.md) | [Business Logic](./hybrid-enterprise-app/docs/BUSINESS_LOGIC.md)
 
 ---
 
@@ -415,7 +486,9 @@ cd aws-elasticbeanstalk
 All projects demonstrate:
 
 ### Infrastructure as Code
+- **Dual IaC Support** - Both Terraform and CloudFormation for each project
 - **Modular Terraform** - Reusable modules for Lambda, SQS, DynamoDB, etc.
+- **CloudFormation Nested Stacks** - S3-hosted templates with deploy scripts
 - **Environment-based configuration** - Dev, staging, production support
 - **Output values** for cross-stack references
 
@@ -437,32 +510,62 @@ All projects demonstrate:
 
 ### Common Requirements
 - **AWS CLI** configured with appropriate credentials
-- **Terraform 1.5+**
+- **Terraform 1.5+** (for Terraform deployments)
+- **AWS CloudFormation** (for CloudFormation deployments)
+- **S3 Bucket** for CloudFormation nested stack templates
 - **AWS Account** with admin or sufficient permissions
 
-### aws-lambda / aws-elasticbeanstalk (Java)
+### serverless-api / hybrid-enterprise-app (Java)
 - Java 21 (Amazon Corretto recommended)
 - Maven 3.9+
 
-### aws-ml / aws-serverless / aws-kinesis / aws-sms / aws-sqs / aws-call-sentiment / aws-lex / aws-athena (Python)
+### document-processing / multi-tenant-saas / fleet-tracking / messaging-platform / banking-transactions / call-center-analytics / conversational-ai / data-lake-analytics (Python)
 - Python 3.12+
 - pip or uv for package management
 
 ---
 
+## Deployment Options
+
+Each project supports two Infrastructure as Code approaches:
+
+### Option 1: Terraform
+```bash
+cd <project>/terraform
+terraform init
+terraform plan
+terraform apply
+```
+
+### Option 2: CloudFormation
+```bash
+cd <project>
+./scripts/deploy-cfn.sh --env dev --bucket your-cfn-bucket
+```
+
+The CloudFormation deploy script:
+1. Syncs nested templates to S3
+2. Replaces local paths with S3 URLs
+3. Creates/updates the CloudFormation stack
+
+---
+
 ## AWS Region
 
-All projects default to **eu-central-2** (EU Zurich). Modify `terraform.tfvars` or environment files:
+All projects default to **eu-central-2** (EU Zurich). Configure via:
 
+**Terraform** - Modify `terraform.tfvars`:
 ```hcl
 aws_region = "eu-central-2"  # EU Zurich
 ```
+
+**CloudFormation** - Use `--region` flag or set `AWS_DEFAULT_REGION`
 
 ---
 
 ## Cost Considerations
 
-Most projects use serverless, pay-per-use services. The aws-elasticbeanstalk project uses EC2-based pricing:
+Most projects use serverless, pay-per-use services. The hybrid-enterprise-app project uses EC2-based pricing:
 
 | Service | Free Tier | Pricing |
 |---------|-----------|---------|
@@ -493,75 +596,92 @@ Most projects use serverless, pay-per-use services. The aws-elasticbeanstalk pro
 ## Project Structure
 
 ```
-aws-examples/
-├── README.md                 # This file
-├── aws-lambda/               # Java Task Automation System
-│   ├── lambda/               # Maven multi-module project
-│   ├── terraform/            # Infrastructure
-│   ├── scripts/              # Build/deploy scripts
+aws-prorotypes/
+├── README.md                      # This file
+├── serverless-api/                # Java Task Automation System
+│   ├── lambda/                    # Maven multi-module project
+│   ├── terraform/                 # Terraform infrastructure
+│   ├── cloudformation/            # CloudFormation nested stacks
+│   ├── docs/                      # Business logic & cost simulation
+│   ├── scripts/                   # Build/deploy scripts
 │   └── README.md
-├── aws-ml/                   # Python ML Platform
-│   ├── src/                  # Python Lambda source
-│   ├── sagemaker/            # Training code
-│   ├── terraform/            # Infrastructure
-│   ├── scripts/              # Build/deploy scripts
+├── document-processing/           # Python ML Platform
+│   ├── src/                       # Python Lambda source
+│   ├── sagemaker/                 # Training code
+│   ├── terraform/                 # Terraform infrastructure
+│   ├── cloudformation/            # CloudFormation nested stacks
+│   ├── tests/                     # Unit and integration tests
+│   ├── docs/                      # Business logic & cost simulation
+│   ├── scripts/                   # Build/deploy scripts
 │   └── README.md
-├── aws-serverless/           # Enterprise API Platform
-│   ├── src/                  # Python Lambda source
-│   ├── terraform/            # Infrastructure
-│   ├── environments/         # Dev/staging/prod configs
-│   ├── scripts/              # Build/deploy scripts
+├── multi-tenant-saas/             # Enterprise API Platform
+│   ├── src/                       # Python Lambda source
+│   ├── terraform/                 # Terraform infrastructure (20+ modules)
+│   ├── cloudformation/            # CloudFormation nested stacks
+│   ├── environments/              # Dev/staging/prod configs
+│   ├── policies/                  # IAM policy documents
+│   ├── tests/                     # Unit and integration tests
+│   ├── docs/                      # Business logic & cost simulation
+│   ├── scripts/                   # Build/deploy scripts
 │   └── README.md
-├── aws-kinesis/              # Real-Time GPS Tracking
-│   ├── src/                  # Python Lambda source
-│   ├── terraform/            # Infrastructure (7 modules)
-│   ├── tests/                # Unit and integration tests
-│   ├── scripts/              # Build/deploy scripts
+├── fleet-tracking/                # Real-Time GPS Tracking
+│   ├── src/                       # Python Lambda source
+│   ├── terraform/                 # Terraform infrastructure (7 modules)
+│   ├── cloudformation/            # CloudFormation nested stacks
+│   ├── tests/                     # Unit and integration tests
+│   ├── docs/                      # Business logic & cost simulation
+│   ├── scripts/                   # Build/deploy scripts
 │   └── README.md
-├── aws-sms/                  # SMS Marketing Campaign Platform
-│   ├── src/                  # Python Lambda source
-│   ├── terraform/            # Infrastructure (8 modules)
-│   ├── tests/                # Unit and integration tests
-│   ├── docs/                 # Business logic documentation
-│   ├── scripts/              # Build/deploy scripts
+├── messaging-platform/            # SMS Marketing Campaign Platform
+│   ├── src/                       # Python Lambda source
+│   ├── terraform/                 # Terraform infrastructure (8 modules)
+│   ├── cloudformation/            # CloudFormation nested stacks
+│   ├── tests/                     # Unit and integration tests
+│   ├── docs/                      # Business logic & cost simulation
+│   ├── scripts/                   # Build/deploy scripts
 │   └── README.md
-├── aws-sqs/                  # Online Banking Platform with SQS Auto Scaling
-│   ├── src/                  # Python source (Lambda + EC2)
-│   ├── terraform/            # Infrastructure (6 modules)
-│   ├── tests/                # Unit and integration tests
-│   ├── docs/                 # Business logic documentation
-│   ├── scripts/              # Build/deploy scripts
+├── banking-transactions/          # Online Banking Platform with SQS Auto Scaling
+│   ├── src/                       # Python source (Lambda + EC2)
+│   ├── terraform/                 # Terraform infrastructure (6 modules)
+│   ├── cloudformation/            # CloudFormation nested stacks
+│   ├── tests/                     # Unit and integration tests
+│   ├── docs/                      # Business logic & cost simulation
+│   ├── scripts/                   # Build/deploy scripts
 │   └── README.md
-├── aws-call-sentiment/       # Call Center Sentiment Analysis
-│   ├── src/                  # Python Lambda source
-│   ├── terraform/            # Infrastructure (7 modules)
-│   ├── tests/                # Unit and integration tests
-│   ├── docs/                 # Business logic documentation
-│   ├── scripts/              # Build/deploy scripts
+├── call-center-analytics/         # Call Center Sentiment Analysis
+│   ├── src/                       # Python Lambda source
+│   ├── terraform/                 # Terraform infrastructure (7 modules)
+│   ├── cloudformation/            # CloudFormation nested stacks
+│   ├── tests/                     # Unit and integration tests
+│   ├── docs/                      # Business logic & cost simulation
+│   ├── scripts/                   # Build/deploy scripts
 │   └── README.md
-├── aws-lex/                  # Airline Chatbot Platform
-│   ├── src/                  # Python Lambda source
-│   ├── terraform/            # Infrastructure (6 modules)
-│   ├── tests/                # Unit and integration tests
-│   ├── docs/                 # Business logic documentation
-│   ├── scripts/              # Build/deploy scripts
+├── conversational-ai/             # Airline Chatbot Platform
+│   ├── src/                       # Python Lambda source
+│   ├── terraform/                 # Terraform infrastructure (6 modules)
+│   ├── cloudformation/            # CloudFormation nested stacks
+│   ├── tests/                     # Unit and integration tests
+│   ├── docs/                      # Business logic & cost simulation
+│   ├── scripts/                   # Build/deploy scripts
 │   └── README.md
-├── aws-athena/               # Data Lake Analytics Platform
-│   ├── src/                  # Python Lambda source
-│   ├── glue/                 # PySpark ETL scripts
-│   ├── terraform/            # Infrastructure (8 modules)
-│   ├── cloudformation/       # CloudFormation nested stacks
-│   ├── tests/                # Unit and integration tests
-│   ├── docs/                 # Business logic documentation
-│   ├── scripts/              # Build/deploy scripts
+├── data-lake-analytics/           # Data Lake Analytics Platform
+│   ├── src/                       # Python Lambda source
+│   ├── glue/                      # PySpark ETL scripts
+│   ├── terraform/                 # Terraform infrastructure (8 modules)
+│   ├── cloudformation/            # CloudFormation nested stacks
+│   ├── tests/                     # Unit and integration tests
+│   ├── docs/                      # Business logic & cost simulation
+│   ├── scripts/                   # Build/deploy scripts
 │   └── README.md
-└── aws-elasticbeanstalk/     # Hybrid Enterprise Inventory
-    ├── application/          # Spring Boot application
-    │   ├── src/              # Java source (ai.intelliswarm.inventory)
-    │   ├── .ebextensions/    # EB configuration
-    │   └── pom.xml           # Maven configuration
-    ├── terraform/            # Infrastructure (5 modules)
-    ├── scripts/              # Build/deploy scripts
+└── hybrid-enterprise-app/         # Hybrid Enterprise Inventory
+    ├── application/               # Spring Boot application
+    │   ├── src/                   # Java source (ai.intelliswarm.inventory)
+    │   ├── .ebextensions/         # EB configuration
+    │   └── pom.xml                # Maven configuration
+    ├── terraform/                 # Terraform infrastructure (5 modules)
+    ├── cloudformation/            # CloudFormation nested stacks
+    ├── docs/                      # Business logic & cost simulation
+    ├── scripts/                   # Build/deploy scripts
     └── README.md
 ```
 

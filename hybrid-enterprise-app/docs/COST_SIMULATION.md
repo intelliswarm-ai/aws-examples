@@ -465,6 +465,153 @@ These costs are separate from AWS:
 
 ---
 
+## Enterprise In-House Cost Comparison
+
+This section compares the cost of running the application tier on AWS Elastic Beanstalk versus running it entirely in-house on on-premises infrastructure. Note that Oracle database costs are already incurred on-premises and are separate from this comparison.
+
+### 1. Infrastructure Costs (Application Servers, Load Balancers)
+
+| Item | Monthly Cost | Notes |
+|------|--------------|-------|
+| Application servers (2-4 physical/VM) | $4,000 | Hardware depreciation, maintenance |
+| Load balancer appliance | $1,500 | F5/Citrix ADC or similar |
+| Network switches/routers | $800 | Dedicated application network |
+| Storage (SAN/NAS allocation) | $1,200 | For application logs, temp files |
+| Backup infrastructure | $500 | Tape/disk backup allocation |
+| **Total Infrastructure** | **$8,000** | |
+
+### 2. Data Center/Facilities Costs
+
+| Item | Monthly Cost | Notes |
+|------|--------------|-------|
+| Rack space (2-3 racks) | $1,500 | Co-location or internal allocation |
+| Power (servers + cooling) | $1,800 | 10-15 kW typical |
+| Cooling allocation | $800 | HVAC proportional cost |
+| Physical security | $400 | Badge access, cameras |
+| Internet connectivity | $500 | Redundant business-class |
+| **Total Facilities** | **$5,000** | |
+
+### 3. Software Licensing Costs
+
+| Item | Monthly Cost | Notes |
+|------|--------------|-------|
+| Java application server (WebLogic/WebSphere) | $3,500 | Enterprise license per CPU |
+| Monitoring (Dynatrace/AppDynamics) | $1,500 | APM per host |
+| Load balancer software license | $500 | If using software LB |
+| Antivirus/endpoint protection | $200 | Per server |
+| Backup software license | $300 | Veeam/Commvault allocation |
+| **Total Software** | **$6,000** | |
+
+### 4. Personnel Costs
+
+| Role | FTE | Monthly Cost | Notes |
+|------|-----|--------------|-------|
+| Java Developer/Architect | 1.0 | $15,000 | Application maintenance, updates |
+| DevOps/System Administrator | 1.0 | $12,000 | Server management, deployments |
+| Operations/On-call support | 0.5 | $8,000 | 24/7 coverage (shared) |
+| Security/Compliance | Shared | $5,000 | Patching, audits, compliance |
+| **Total Personnel (2.5 FTE)** | | **$40,000** | |
+
+### 5. Total In-House Monthly Cost Summary
+
+| Category | Monthly Cost | % of Total |
+|----------|--------------|------------|
+| Infrastructure | $8,000 | 13.6% |
+| Data Center/Facilities | $5,000 | 8.5% |
+| Software Licensing | $6,000 | 10.2% |
+| Personnel | $40,000 | 67.8% |
+| **Total In-House** | **$59,000** | 100% |
+
+### 6. AWS Hybrid vs Full On-Premises Cost Comparison
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│            Monthly Cost Comparison: AWS Hybrid vs Full On-Premises          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  AWS Elastic Beanstalk (Hybrid)                                             │
+│  █ $219/month                                                               │
+│  |                                                                          │
+│  Full On-Premises (Application Tier Only)                                   │
+│  ████████████████████████████████████████████████████████████ $59,000/month │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Cost Breakdown (Full On-Premises):                                         │
+│                                                                             │
+│  Personnel         ████████████████████████████████████████░░░  67.8%       │
+│  Infrastructure    ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  13.6%       │
+│  Software          ██████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  10.2%       │
+│  Facilities        █████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   8.5%       │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  AWS Hybrid Savings: $58,781/month (269x cheaper)                           │
+│  Annual Savings:     $705,372                                               │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 7. Oracle Database Costs (Existing - Separate)
+
+> **Important**: The Oracle database costs listed in the "On-Premises Costs (Not Included)" section above ($2,000-3,000/month) are already being incurred regardless of where the application tier runs. These costs include:
+> - Oracle Database Enterprise Edition licensing
+> - Oracle Support (22% annual maintenance)
+> - Database server hardware depreciation
+> - DBA personnel allocation
+>
+> The hybrid approach with AWS Elastic Beanstalk **does not add** to these existing Oracle costs - it only replaces where the application tier runs.
+
+### 8. Time-to-Market Comparison
+
+| Metric | AWS Elastic Beanstalk | Full On-Premises |
+|--------|----------------------|------------------|
+| Initial deployment | 1-2 days | 4-8 weeks |
+| New environment provisioning | 15 minutes | 2-4 weeks |
+| Scaling (add capacity) | 5 minutes (auto) | 2-6 weeks |
+| Disaster recovery setup | 1-2 days | 2-3 months |
+| Security patching | Hours (managed) | Days-weeks |
+| Application updates | Minutes (rolling) | Hours (planned downtime) |
+
+**Time-to-market advantage**: AWS hybrid approach can reduce initial deployment from 6-8 weeks to under a week, allowing faster business value realization.
+
+### 9. When Full On-Premises Makes Sense vs Hybrid
+
+#### Choose Full On-Premises When:
+
+| Scenario | Rationale |
+|----------|-----------|
+| Strict data sovereignty requirements | All data must remain in specific physical location |
+| Air-gapped environments | No internet connectivity allowed (defense, classified) |
+| Existing excess data center capacity | Sunk costs in underutilized infrastructure |
+| Regulatory prohibition on cloud | Specific industry regulations forbidding cloud |
+| Extreme low-latency requirements | Sub-millisecond latency to database required |
+| Very high sustained traffic | 24/7 maximum capacity utilization |
+
+#### Choose AWS Hybrid When:
+
+| Scenario | Rationale |
+|----------|-----------|
+| Variable workloads | Auto-scaling reduces costs during low periods |
+| Limited IT staff | Managed services reduce operational burden |
+| Rapid growth expected | Elastic capacity without capital investment |
+| Disaster recovery needs | Multi-region availability at fraction of cost |
+| Security compliance | AWS compliance certifications (SOC, ISO, HIPAA) |
+| Existing Oracle investment | Leverage existing database, modernize app tier |
+| Time-to-market critical | Deploy in days vs weeks/months |
+
+#### Hybrid Approach Benefits (Current Architecture)
+
+| Benefit | Impact |
+|---------|--------|
+| Preserves Oracle investment | No database migration costs |
+| Reduces capital expenditure | $0 upfront for app tier |
+| Maintains data locality | Sensitive data stays on-premises |
+| Enables gradual modernization | Migrate at your own pace |
+| Provides operational flexibility | Scale app tier independently |
+
+---
+
 ## Recommendations
 
 1. **Use NAT Instance for dev** - Save $37/month vs NAT Gateway
