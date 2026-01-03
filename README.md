@@ -16,6 +16,7 @@ A collection of AWS architectures demonstrating best practices for cloud-native 
 | [conversational-ai](./conversational-ai) | Airline Chatbot Platform | Python 3.12 | Lex V2, Lambda, DynamoDB, API Gateway | [docs](./conversational-ai/docs/BUSINESS_LOGIC.md) |
 | [data-lake-analytics](./data-lake-analytics) | Data Lake Analytics Platform | Python 3.12 | Athena, Glue, Lake Formation, S3 | [docs](./data-lake-analytics/docs/BUSINESS_LOGIC.md) |
 | [hybrid-enterprise-app](./hybrid-enterprise-app) | Hybrid Enterprise Inventory System | Java 21 | Elastic Beanstalk, VPN Gateway, S3, CloudWatch | [docs](./hybrid-enterprise-app/docs/BUSINESS_LOGIC.md) |
+| [emr-fraud-detection](./emr-fraud-detection) | ML Fraud Detection with Spark | Python 3.12 | EMR, Spark MLlib, Kinesis, Step Functions, DynamoDB | [docs](./emr-fraud-detection/docs/BUSINESS_LOGIC.md) |
 
 ---
 
@@ -27,18 +28,19 @@ Find projects by AWS service for quick navigation:
 
 | Service | Projects |
 |---------|----------|
-| **Lambda** | [serverless-api](./serverless-api), [document-processing](./document-processing), [multi-tenant-saas](./multi-tenant-saas), [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform), [banking-transactions](./banking-transactions), [call-center-analytics](./call-center-analytics), [conversational-ai](./conversational-ai), [data-lake-analytics](./data-lake-analytics) |
+| **Lambda** | [serverless-api](./serverless-api), [document-processing](./document-processing), [multi-tenant-saas](./multi-tenant-saas), [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform), [banking-transactions](./banking-transactions), [call-center-analytics](./call-center-analytics), [conversational-ai](./conversational-ai), [data-lake-analytics](./data-lake-analytics), [emr-fraud-detection](./emr-fraud-detection) |
+| **EMR (Spark)** | [emr-fraud-detection](./emr-fraud-detection) |
 | **Elastic Beanstalk** | [hybrid-enterprise-app](./hybrid-enterprise-app) |
 | **EC2 Auto Scaling** | [banking-transactions](./banking-transactions) |
-| **Step Functions** | [serverless-api](./serverless-api), [document-processing](./document-processing) |
+| **Step Functions** | [serverless-api](./serverless-api), [document-processing](./document-processing), [emr-fraud-detection](./emr-fraud-detection) |
 
 ### Messaging & Streaming
 
 | Service | Projects |
 |---------|----------|
 | **SQS** | [serverless-api](./serverless-api), [banking-transactions](./banking-transactions) |
-| **SNS** | [serverless-api](./serverless-api), [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform) |
-| **Kinesis Data Streams** | [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform) |
+| **SNS** | [serverless-api](./serverless-api), [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform), [emr-fraud-detection](./emr-fraud-detection) |
+| **Kinesis Data Streams** | [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform), [emr-fraud-detection](./emr-fraud-detection) |
 | **EventBridge** | [serverless-api](./serverless-api), [fleet-tracking](./fleet-tracking) |
 | **Pinpoint** | [messaging-platform](./messaging-platform) |
 
@@ -46,8 +48,8 @@ Find projects by AWS service for quick navigation:
 
 | Service | Projects |
 |---------|----------|
-| **DynamoDB** | [serverless-api](./serverless-api), [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform), [banking-transactions](./banking-transactions), [conversational-ai](./conversational-ai) |
-| **S3** | [document-processing](./document-processing), [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform), [call-center-analytics](./call-center-analytics), [data-lake-analytics](./data-lake-analytics), [hybrid-enterprise-app](./hybrid-enterprise-app) |
+| **DynamoDB** | [serverless-api](./serverless-api), [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform), [banking-transactions](./banking-transactions), [conversational-ai](./conversational-ai), [emr-fraud-detection](./emr-fraud-detection) |
+| **S3** | [document-processing](./document-processing), [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform), [call-center-analytics](./call-center-analytics), [data-lake-analytics](./data-lake-analytics), [hybrid-enterprise-app](./hybrid-enterprise-app), [emr-fraud-detection](./emr-fraud-detection) |
 | **OpenSearch** | [call-center-analytics](./call-center-analytics) |
 
 ### AI/ML Services
@@ -66,6 +68,7 @@ Find projects by AWS service for quick navigation:
 
 | Service | Projects |
 |---------|----------|
+| **EMR (Spark MLlib)** | [emr-fraud-detection](./emr-fraud-detection) |
 | **Athena** | [data-lake-analytics](./data-lake-analytics) |
 | **Glue ETL** | [data-lake-analytics](./data-lake-analytics) |
 | **Lake Formation** | [data-lake-analytics](./data-lake-analytics) |
@@ -84,8 +87,8 @@ Find projects by AWS service for quick navigation:
 
 | Service | Projects |
 |---------|----------|
-| **API Gateway** | [banking-transactions](./banking-transactions), [call-center-analytics](./call-center-analytics), [conversational-ai](./conversational-ai) |
-| **VPC** | [multi-tenant-saas](./multi-tenant-saas) |
+| **API Gateway** | [banking-transactions](./banking-transactions), [call-center-analytics](./call-center-analytics), [conversational-ai](./conversational-ai), [emr-fraud-detection](./emr-fraud-detection) |
+| **VPC** | [multi-tenant-saas](./multi-tenant-saas), [emr-fraud-detection](./emr-fraud-detection) |
 | **VPN Gateway** | [hybrid-enterprise-app](./hybrid-enterprise-app) |
 
 ---
@@ -481,6 +484,51 @@ cd hybrid-enterprise-app
 
 ---
 
+## emr-fraud-detection
+
+**ML Fraud Detection with Spark** - An ML-based fraud detection system processing millions of financial transactions using Amazon EMR with Apache Spark.
+
+### Use Case
+A financial institution detecting fraudulent transactions in near real-time. Transactions are ingested via API, features are engineered at scale using Spark, and ML models score each transaction for fraud probability with alerts for investigation.
+
+### Architecture Highlights
+- **Kinesis Data Streams** real-time transaction ingestion
+- **EMR Spark** transient clusters for batch processing (cost-optimized)
+- **Spark MLlib** Random Forest classifier for fraud detection
+- **Spark Structured Streaming** near real-time scoring from Kinesis
+- **Step Functions** ML pipeline orchestration (feature engineering → training → scoring)
+- **S3 Data Lake** raw, features, models, predictions zones
+- **DynamoDB** fraud alerts and prediction results
+- **SNS** real-time fraud notifications
+
+### Tech Stack
+- Python 3.12 with type hints
+- PySpark for feature engineering and ML
+- Spark MLlib (Random Forest, 100 trees)
+- Pydantic for data validation
+- AWS Lambda Powertools (logging, tracing, metrics)
+- Terraform modular infrastructure (11 modules)
+- CloudFormation nested stacks (11 templates)
+
+### Key Features
+- **Feature Engineering** - Velocity, behavioral, distance, temporal features
+- **Dual Scoring Modes** - Batch (Step Functions) and streaming (Structured Streaming)
+- **Transient EMR** - Clusters created per pipeline run, auto-terminate after
+- **Spot Instances** - 50-70% cost savings on task nodes
+- **Risk Factor Identification** - HIGH_AMOUNT, HIGH_VELOCITY, NEW_MERCHANT, IMPOSSIBLE_TRAVEL
+- **Fraud Thresholds** - 0.7+ (fraudulent), 0.4-0.7 (suspicious)
+
+### Quick Start
+```bash
+cd emr-fraud-detection
+./scripts/build.sh --all
+./scripts/deploy.sh -e dev
+```
+
+[View full documentation](./emr-fraud-detection/README.md) | [Business Logic](./emr-fraud-detection/docs/BUSINESS_LOGIC.md)
+
+---
+
 ## Common Patterns
 
 All projects demonstrate:
@@ -519,7 +567,7 @@ All projects demonstrate:
 - Java 21 (Amazon Corretto recommended)
 - Maven 3.9+
 
-### document-processing / multi-tenant-saas / fleet-tracking / messaging-platform / banking-transactions / call-center-analytics / conversational-ai / data-lake-analytics (Python)
+### document-processing / multi-tenant-saas / fleet-tracking / messaging-platform / banking-transactions / call-center-analytics / conversational-ai / data-lake-analytics / emr-fraud-detection (Python)
 - Python 3.12+
 - pip or uv for package management
 
@@ -587,6 +635,7 @@ Most projects use serverless, pay-per-use services. The hybrid-enterprise-app pr
 | Lake Formation | None | No additional charge |
 | Elastic Beanstalk | None (EC2 costs) | ~$30/mo per t3.medium |
 | EC2 Auto Scaling | None (EC2 costs) | ~$30/mo per t3.medium |
+| EMR | None | $0.192/hr (m5.xlarge) + EC2 |
 | VPN Gateway | None | $0.05/hour (~$36/mo) |
 
 **Tip**: Use `./scripts/deploy.sh --destroy` to tear down resources when not in use.
@@ -673,13 +722,24 @@ aws-prorotypes/
 │   ├── docs/                      # Business logic & cost simulation
 │   ├── scripts/                   # Build/deploy scripts
 │   └── README.md
-└── hybrid-enterprise-app/         # Hybrid Enterprise Inventory
-    ├── application/               # Spring Boot application
-    │   ├── src/                   # Java source (ai.intelliswarm.inventory)
-    │   ├── .ebextensions/         # EB configuration
-    │   └── pom.xml                # Maven configuration
-    ├── terraform/                 # Terraform infrastructure (5 modules)
+├── hybrid-enterprise-app/         # Hybrid Enterprise Inventory
+│   ├── application/               # Spring Boot application
+│   │   ├── src/                   # Java source (ai.intelliswarm.inventory)
+│   │   ├── .ebextensions/         # EB configuration
+│   │   └── pom.xml                # Maven configuration
+│   ├── terraform/                 # Terraform infrastructure (5 modules)
+│   ├── cloudformation/            # CloudFormation nested stacks
+│   ├── docs/                      # Business logic & cost simulation
+│   ├── scripts/                   # Build/deploy scripts
+│   └── README.md
+└── emr-fraud-detection/           # ML Fraud Detection with Spark
+    ├── src/                       # Python Lambda source
+    ├── spark/                     # PySpark jobs and utilities
+    │   ├── jobs/                  # Feature engineering, training, scoring
+    │   └── utils/                 # Spark session and feature utilities
+    ├── terraform/                 # Terraform infrastructure (11 modules)
     ├── cloudformation/            # CloudFormation nested stacks
+    ├── tests/                     # Unit and integration tests
     ├── docs/                      # Business logic & cost simulation
     ├── scripts/                   # Build/deploy scripts
     └── README.md

@@ -1,0 +1,170 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EMR cluster configuration for Fraud Detection Pipeline
+
+Parameters:
+  Environment:
+    Type: String
+  ProjectName:
+    Type: String
+  VpcId:
+    Type: String
+  PrivateSubnetId:
+    Type: String
+  EMRServiceRoleArn:
+    Type: String
+  EMREC2RoleArn:
+    Type: String
+  EMREC2InstanceProfileArn:
+    Type: String
+  LogsBucket:
+    Type: String
+  ReleaseLabel:
+    Type: String
+    Default: emr-7.0.0
+  MasterInstanceType:
+    Type: String
+    Default: m5.xlarge
+  CoreInstanceType:
+    Type: String
+    Default: m5.xlarge
+  CoreInstanceCount:
+    Type: Number
+    Default: 2
+  UseSpotInstances:
+    Type: String
+    Default: 'true'
+
+Conditions:
+  UseSpot: !Equals [!Ref UseSpotInstances, 'true']
+
+Resources:
+  # Security Group for EMR Master
+  EMRMasterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${ProjectName}-${Environment}-emr-master-sg
+      GroupDescription: Security group for EMR master nodes
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 10.0.0.0/16
+          Description: SSH from VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-emr-master-sg
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Security Group for EMR Slave
+  EMRSlaveSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${ProjectName}-${Environment}-emr-slave-sg
+      GroupDescription: Security group for EMR slave nodes
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-emr-slave-sg
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Allow master-slave communication
+  MasterToSlaveIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref EMRSlaveSecurityGroup
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref EMRMasterSecurityGroup
+
+  SlaveToMasterIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref EMRMasterSecurityGroup
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref EMRSlaveSecurityGroup
+
+  SlaveToSlaveIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref EMRSlaveSecurityGroup
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref EMRSlaveSecurityGroup
+
+  # EMR Streaming Cluster (always-on for real-time)
+  StreamingCluster:
+    Type: AWS::EMR::Cluster
+    Properties:
+      Name: !Sub ${ProjectName}-${Environment}-streaming
+      ReleaseLabel: !Ref ReleaseLabel
+      Applications:
+        - Name: Spark
+        - Name: Hadoop
+        - Name: Ganglia
+      Instances:
+        MasterInstanceGroup:
+          Name: Master
+          InstanceCount: 1
+          InstanceType: !Ref MasterInstanceType
+          Market: ON_DEMAND
+        CoreInstanceGroup:
+          Name: Core
+          InstanceCount: 2
+          InstanceType: !Ref CoreInstanceType
+          Market: !If [UseSpot, SPOT, ON_DEMAND]
+        Ec2SubnetId: !Ref PrivateSubnetId
+        EmrManagedMasterSecurityGroup: !Ref EMRMasterSecurityGroup
+        EmrManagedSlaveSecurityGroup: !Ref EMRSlaveSecurityGroup
+        TerminationProtected: false
+        KeepJobFlowAliveWhenNoSteps: true
+      Configurations:
+        - Classification: spark-defaults
+          ConfigurationProperties:
+            spark.sql.shuffle.partitions: '20'
+            spark.streaming.stopGracefullyOnShutdown: 'true'
+            spark.serializer: org.apache.spark.serializer.KryoSerializer
+        - Classification: spark
+          ConfigurationProperties:
+            maximizeResourceAllocation: 'true'
+        - Classification: yarn-site
+          ConfigurationProperties:
+            yarn.resourcemanager.am.max-attempts: '1'
+      ServiceRole: !Ref EMRServiceRoleArn
+      JobFlowRole: !Ref EMREC2InstanceProfileArn
+      LogUri: !Sub s3://${LogsBucket}/emr-logs/streaming/
+      VisibleToAllUsers: true
+      AutoTerminationPolicy:
+        IdleTimeout: 3600
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-streaming
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Purpose
+          Value: streaming
+
+Outputs:
+  StreamingClusterId:
+    Description: Streaming EMR cluster ID
+    Value: !Ref StreamingCluster
+
+  EMRMasterSecurityGroupId:
+    Description: EMR master security group ID
+    Value: !Ref EMRMasterSecurityGroup
+
+  EMRSlaveSecurityGroupId:
+    Description: EMR slave security group ID
+    Value: !Ref EMRSlaveSecurityGroup
+
+  EMRSubnetId:
+    Description: EMR subnet ID
+    Value: !Ref PrivateSubnetId

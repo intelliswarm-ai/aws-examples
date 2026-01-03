@@ -1,0 +1,270 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Lambda functions for EMR Fraud Detection Pipeline
+
+Parameters:
+  Environment:
+    Type: String
+  ProjectName:
+    Type: String
+  VpcId:
+    Type: String
+  PrivateSubnet1Id:
+    Type: String
+  PrivateSubnet2Id:
+    Type: String
+  LambdaExecutionRoleArn:
+    Type: String
+  CodeBucket:
+    Type: String
+  DataBucket:
+    Type: String
+  ModelsBucket:
+    Type: String
+  KinesisStreamName:
+    Type: String
+  KinesisStreamArn:
+    Type: String
+  AlertsTableName:
+    Type: String
+  PredictionsTableName:
+    Type: String
+  ExecutionsTableName:
+    Type: String
+  FraudAlertsTopicArn:
+    Type: String
+  ModelVersion:
+    Type: String
+  FraudThreshold:
+    Type: Number
+  SuspiciousThreshold:
+    Type: Number
+
+Resources:
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${ProjectName}-${Environment}-lambda-sg
+      GroupDescription: Security group for Lambda functions
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-lambda-sg
+
+  # Ingestion Lambda
+  IngestionFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-${Environment}-ingestion
+      Runtime: python3.11
+      Handler: handlers.ingestion_handler.handler
+      Role: !Ref LambdaExecutionRoleArn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: lambda/fraud-detection.zip
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          KINESIS_STREAM_NAME: !Ref KinesisStreamName
+          POWERTOOLS_SERVICE_NAME: !Sub ${ProjectName}-ingestion
+          LOG_LEVEL: INFO
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1Id
+          - !Ref PrivateSubnet2Id
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Stream Processor Lambda
+  StreamProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-${Environment}-stream-processor
+      Runtime: python3.11
+      Handler: handlers.stream_processor.handler
+      Role: !Ref LambdaExecutionRoleArn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: lambda/fraud-detection.zip
+      Timeout: 60
+      MemorySize: 512
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DATA_BUCKET: !Ref DataBucket
+          POWERTOOLS_SERVICE_NAME: !Sub ${ProjectName}-stream-processor
+          LOG_LEVEL: INFO
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1Id
+          - !Ref PrivateSubnet2Id
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  StreamProcessorEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !Ref KinesisStreamArn
+      FunctionName: !Ref StreamProcessorFunction
+      StartingPosition: LATEST
+      BatchSize: 100
+      MaximumBatchingWindowInSeconds: 5
+      ParallelizationFactor: 2
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+
+  # Orchestration Lambda
+  OrchestrationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-${Environment}-orchestration
+      Runtime: python3.11
+      Handler: handlers.orchestration_handler.handler
+      Role: !Ref LambdaExecutionRoleArn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: lambda/fraud-detection.zip
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DATA_BUCKET: !Ref DataBucket
+          MODELS_BUCKET: !Ref ModelsBucket
+          EXECUTIONS_TABLE_NAME: !Ref ExecutionsTableName
+          MODEL_VERSION: !Ref ModelVersion
+          POWERTOOLS_SERVICE_NAME: !Sub ${ProjectName}-orchestration
+          LOG_LEVEL: INFO
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1Id
+          - !Ref PrivateSubnet2Id
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Alert Lambda
+  AlertFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-${Environment}-alert
+      Runtime: python3.11
+      Handler: handlers.alert_handler.handler
+      Role: !Ref LambdaExecutionRoleArn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: lambda/fraud-detection.zip
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          ALERTS_TABLE_NAME: !Ref AlertsTableName
+          FRAUD_ALERTS_TOPIC_ARN: !Ref FraudAlertsTopicArn
+          FRAUD_THRESHOLD: !Ref FraudThreshold
+          SUSPICIOUS_THRESHOLD: !Ref SuspiciousThreshold
+          POWERTOOLS_SERVICE_NAME: !Sub ${ProjectName}-alert
+          LOG_LEVEL: INFO
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1Id
+          - !Ref PrivateSubnet2Id
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Query Lambda
+  QueryFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-${Environment}-query
+      Runtime: python3.11
+      Handler: handlers.query_handler.handler
+      Role: !Ref LambdaExecutionRoleArn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: lambda/fraud-detection.zip
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          ALERTS_TABLE_NAME: !Ref AlertsTableName
+          PREDICTIONS_TABLE_NAME: !Ref PredictionsTableName
+          EXECUTIONS_TABLE_NAME: !Ref ExecutionsTableName
+          POWERTOOLS_SERVICE_NAME: !Sub ${ProjectName}-query
+          LOG_LEVEL: INFO
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1Id
+          - !Ref PrivateSubnet2Id
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+Outputs:
+  IngestionFunctionArn:
+    Description: Ingestion function ARN
+    Value: !GetAtt IngestionFunction.Arn
+
+  IngestionFunctionName:
+    Description: Ingestion function name
+    Value: !Ref IngestionFunction
+
+  StreamProcessorFunctionArn:
+    Description: Stream processor function ARN
+    Value: !GetAtt StreamProcessorFunction.Arn
+
+  StreamProcessorFunctionName:
+    Description: Stream processor function name
+    Value: !Ref StreamProcessorFunction
+
+  OrchestrationFunctionArn:
+    Description: Orchestration function ARN
+    Value: !GetAtt OrchestrationFunction.Arn
+
+  OrchestrationFunctionName:
+    Description: Orchestration function name
+    Value: !Ref OrchestrationFunction
+
+  AlertFunctionArn:
+    Description: Alert function ARN
+    Value: !GetAtt AlertFunction.Arn
+
+  AlertFunctionName:
+    Description: Alert function name
+    Value: !Ref AlertFunction
+
+  QueryFunctionArn:
+    Description: Query function ARN
+    Value: !GetAtt QueryFunction.Arn
+
+  QueryFunctionName:
+    Description: Query function name
+    Value: !Ref QueryFunction

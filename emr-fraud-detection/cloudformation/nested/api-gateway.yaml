@@ -1,0 +1,208 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: API Gateway for EMR Fraud Detection Pipeline
+
+Parameters:
+  Environment:
+    Type: String
+  ProjectName:
+    Type: String
+  IngestionLambdaArn:
+    Type: String
+  QueryLambdaArn:
+    Type: String
+
+Resources:
+  FraudDetectionApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub ${ProjectName}-${Environment}-api
+      Description: Fraud Detection API
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # /transactions resource
+  TransactionsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref FraudDetectionApi
+      ParentId: !GetAtt FraudDetectionApi.RootResourceId
+      PathPart: transactions
+
+  # POST /transactions
+  TransactionsPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FraudDetectionApi
+      ResourceId: !Ref TransactionsResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${IngestionLambdaArn}/invocations
+
+  # /predictions resource
+  PredictionsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref FraudDetectionApi
+      ParentId: !GetAtt FraudDetectionApi.RootResourceId
+      PathPart: predictions
+
+  # GET /predictions
+  PredictionsGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FraudDetectionApi
+      ResourceId: !Ref PredictionsResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      RequestParameters:
+        method.request.querystring.account_id: false
+        method.request.querystring.transaction_id: false
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${QueryLambdaArn}/invocations
+
+  # /alerts resource
+  AlertsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref FraudDetectionApi
+      ParentId: !GetAtt FraudDetectionApi.RootResourceId
+      PathPart: alerts
+
+  # GET /alerts
+  AlertsGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FraudDetectionApi
+      ResourceId: !Ref AlertsResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      RequestParameters:
+        method.request.querystring.account_id: false
+        method.request.querystring.severity: false
+        method.request.querystring.acknowledged: false
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${QueryLambdaArn}/invocations
+
+  # /alerts/{alert_id} resource
+  AlertIdResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref FraudDetectionApi
+      ParentId: !Ref AlertsResource
+      PathPart: '{alert_id}'
+
+  # PUT /alerts/{alert_id}/acknowledge
+  AcknowledgeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref FraudDetectionApi
+      ParentId: !Ref AlertIdResource
+      PathPart: acknowledge
+
+  AlertAcknowledgeMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FraudDetectionApi
+      ResourceId: !Ref AcknowledgeResource
+      HttpMethod: PUT
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${QueryLambdaArn}/invocations
+
+  # /health resource
+  HealthResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref FraudDetectionApi
+      ParentId: !GetAtt FraudDetectionApi.RootResourceId
+      PathPart: health
+
+  HealthGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FraudDetectionApi
+      ResourceId: !Ref HealthResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: '{"status": "healthy"}'
+      MethodResponses:
+        - StatusCode: 200
+
+  # Lambda Permissions
+  IngestionLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref IngestionLambdaArn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FraudDetectionApi}/*
+
+  QueryLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref QueryLambdaArn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FraudDetectionApi}/*
+
+  # Deployment
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - TransactionsPostMethod
+      - PredictionsGetMethod
+      - AlertsGetMethod
+      - AlertAcknowledgeMethod
+      - HealthGetMethod
+    Properties:
+      RestApiId: !Ref FraudDetectionApi
+      Description: !Sub ${Environment} deployment
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref FraudDetectionApi
+      DeploymentId: !Ref ApiDeployment
+      StageName: !Ref Environment
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          LoggingLevel: INFO
+          DataTraceEnabled: true
+          MetricsEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub https://${FraudDetectionApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}
+
+  ApiId:
+    Description: API Gateway ID
+    Value: !Ref FraudDetectionApi

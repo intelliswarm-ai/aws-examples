@@ -1,0 +1,401 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  EMR Spark Fraud Detection Pipeline - Main Stack
+  Deploys a complete ML-based fraud detection system using EMR with Spark
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Deployment environment
+
+  ProjectName:
+    Type: String
+    Default: fraud-detection
+    Description: Project name for resource naming
+
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+    Description: VPC CIDR block
+
+  TemplatesBucket:
+    Type: String
+    Description: S3 bucket containing nested CloudFormation templates
+
+  EMRReleaseLabel:
+    Type: String
+    Default: emr-7.0.0
+    Description: EMR release version
+
+  MasterInstanceType:
+    Type: String
+    Default: m5.xlarge
+    Description: EMR master node instance type
+
+  CoreInstanceType:
+    Type: String
+    Default: m5.xlarge
+    Description: EMR core node instance type
+
+  CoreInstanceCount:
+    Type: Number
+    Default: 2
+    Description: Number of EMR core nodes
+
+  UseSpotInstances:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Use spot instances for EMR task nodes
+
+  ModelVersion:
+    Type: String
+    Default: v1.0
+    Description: ML model version
+
+  FraudThreshold:
+    Type: Number
+    Default: 0.7
+    Description: Threshold for fraud classification
+
+  SuspiciousThreshold:
+    Type: Number
+    Default: 0.4
+    Description: Threshold for suspicious classification
+
+  AlertEmail:
+    Type: String
+    Description: Email address for fraud alerts
+    Default: ''
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Environment Configuration
+        Parameters:
+          - Environment
+          - ProjectName
+          - TemplatesBucket
+      - Label:
+          default: Network Configuration
+        Parameters:
+          - VpcCidr
+      - Label:
+          default: EMR Configuration
+        Parameters:
+          - EMRReleaseLabel
+          - MasterInstanceType
+          - CoreInstanceType
+          - CoreInstanceCount
+          - UseSpotInstances
+      - Label:
+          default: ML Configuration
+        Parameters:
+          - ModelVersion
+          - FraudThreshold
+          - SuspiciousThreshold
+      - Label:
+          default: Notifications
+        Parameters:
+          - AlertEmail
+
+Resources:
+  # VPC Stack
+  VPCStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/nested/vpc.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+        VpcCidr: !Ref VpcCidr
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # S3 Stack
+  S3Stack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/nested/s3.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Kinesis Stack
+  KinesisStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/nested/kinesis.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # DynamoDB Stack
+  DynamoDBStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/nested/dynamodb.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # SNS Stack
+  SNSStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/nested/sns.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+        AlertEmail: !Ref AlertEmail
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # IAM Stack
+  IAMStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - S3Stack
+      - KinesisStack
+      - DynamoDBStack
+      - SNSStack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/nested/iam.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+        DataBucketArn: !GetAtt S3Stack.Outputs.DataBucketArn
+        ModelsBucketArn: !GetAtt S3Stack.Outputs.ModelsBucketArn
+        LogsBucketArn: !GetAtt S3Stack.Outputs.LogsBucketArn
+        KinesisStreamArn: !GetAtt KinesisStack.Outputs.TransactionsStreamArn
+        AlertsTableArn: !GetAtt DynamoDBStack.Outputs.AlertsTableArn
+        PredictionsTableArn: !GetAtt DynamoDBStack.Outputs.PredictionsTableArn
+        ExecutionsTableArn: !GetAtt DynamoDBStack.Outputs.ExecutionsTableArn
+        FraudAlertsTopicArn: !GetAtt SNSStack.Outputs.FraudAlertsTopicArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # EMR Stack
+  EMRStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - VPCStack
+      - S3Stack
+      - IAMStack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/nested/emr.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        PrivateSubnetId: !GetAtt VPCStack.Outputs.PrivateSubnet1Id
+        EMRServiceRoleArn: !GetAtt IAMStack.Outputs.EMRServiceRoleArn
+        EMREC2RoleArn: !GetAtt IAMStack.Outputs.EMREC2RoleArn
+        EMREC2InstanceProfileArn: !GetAtt IAMStack.Outputs.EMREC2InstanceProfileArn
+        LogsBucket: !GetAtt S3Stack.Outputs.LogsBucketName
+        ReleaseLabel: !Ref EMRReleaseLabel
+        MasterInstanceType: !Ref MasterInstanceType
+        CoreInstanceType: !Ref CoreInstanceType
+        CoreInstanceCount: !Ref CoreInstanceCount
+        UseSpotInstances: !Ref UseSpotInstances
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Lambda Stack
+  LambdaStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - VPCStack
+      - S3Stack
+      - KinesisStack
+      - DynamoDBStack
+      - SNSStack
+      - IAMStack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/nested/lambda.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        PrivateSubnet1Id: !GetAtt VPCStack.Outputs.PrivateSubnet1Id
+        PrivateSubnet2Id: !GetAtt VPCStack.Outputs.PrivateSubnet2Id
+        LambdaExecutionRoleArn: !GetAtt IAMStack.Outputs.LambdaExecutionRoleArn
+        CodeBucket: !GetAtt S3Stack.Outputs.CodeBucketName
+        DataBucket: !GetAtt S3Stack.Outputs.DataBucketName
+        ModelsBucket: !GetAtt S3Stack.Outputs.ModelsBucketName
+        KinesisStreamName: !GetAtt KinesisStack.Outputs.TransactionsStreamName
+        KinesisStreamArn: !GetAtt KinesisStack.Outputs.TransactionsStreamArn
+        AlertsTableName: !GetAtt DynamoDBStack.Outputs.AlertsTableName
+        PredictionsTableName: !GetAtt DynamoDBStack.Outputs.PredictionsTableName
+        ExecutionsTableName: !GetAtt DynamoDBStack.Outputs.ExecutionsTableName
+        FraudAlertsTopicArn: !GetAtt SNSStack.Outputs.FraudAlertsTopicArn
+        ModelVersion: !Ref ModelVersion
+        FraudThreshold: !Ref FraudThreshold
+        SuspiciousThreshold: !Ref SuspiciousThreshold
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # API Gateway Stack
+  APIGatewayStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - LambdaStack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/nested/api-gateway.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+        IngestionLambdaArn: !GetAtt LambdaStack.Outputs.IngestionFunctionArn
+        QueryLambdaArn: !GetAtt LambdaStack.Outputs.QueryFunctionArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Step Functions Stack
+  StepFunctionsStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - IAMStack
+      - EMRStack
+      - LambdaStack
+      - S3Stack
+      - SNSStack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/nested/step-functions.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+        StepFunctionsRoleArn: !GetAtt IAMStack.Outputs.StepFunctionsRoleArn
+        OrchestrationLambdaArn: !GetAtt LambdaStack.Outputs.OrchestrationFunctionArn
+        DataBucket: !GetAtt S3Stack.Outputs.DataBucketName
+        ModelsBucket: !GetAtt S3Stack.Outputs.ModelsBucketName
+        LogsBucket: !GetAtt S3Stack.Outputs.LogsBucketName
+        EMRServiceRoleArn: !GetAtt IAMStack.Outputs.EMRServiceRoleArn
+        EMREC2InstanceProfileArn: !GetAtt IAMStack.Outputs.EMREC2InstanceProfileArn
+        EMRSubnetId: !GetAtt VPCStack.Outputs.PrivateSubnet1Id
+        PipelineNotificationsTopicArn: !GetAtt SNSStack.Outputs.PipelineNotificationsTopicArn
+        ReleaseLabel: !Ref EMRReleaseLabel
+        MasterInstanceType: !Ref MasterInstanceType
+        CoreInstanceType: !Ref CoreInstanceType
+        CoreInstanceCount: !Ref CoreInstanceCount
+        ModelVersion: !Ref ModelVersion
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # CloudWatch Stack
+  CloudWatchStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - LambdaStack
+      - KinesisStack
+      - DynamoDBStack
+      - StepFunctionsStack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/nested/cloudwatch.yaml
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+        KinesisStreamName: !GetAtt KinesisStack.Outputs.TransactionsStreamName
+        IngestionFunctionName: !GetAtt LambdaStack.Outputs.IngestionFunctionName
+        StreamProcessorFunctionName: !GetAtt LambdaStack.Outputs.StreamProcessorFunctionName
+        AlertFunctionName: !GetAtt LambdaStack.Outputs.AlertFunctionName
+        AlertsTableName: !GetAtt DynamoDBStack.Outputs.AlertsTableName
+        StateMachineName: !GetAtt StepFunctionsStack.Outputs.StateMachineName
+        AlertTopicArn: !GetAtt SNSStack.Outputs.PipelineNotificationsTopicArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+Outputs:
+  # VPC Outputs
+  VpcId:
+    Description: VPC ID
+    Value: !GetAtt VPCStack.Outputs.VpcId
+    Export:
+      Name: !Sub ${AWS::StackName}-VpcId
+
+  # S3 Outputs
+  DataBucketName:
+    Description: Data lake bucket name
+    Value: !GetAtt S3Stack.Outputs.DataBucketName
+    Export:
+      Name: !Sub ${AWS::StackName}-DataBucket
+
+  ModelsBucketName:
+    Description: Models bucket name
+    Value: !GetAtt S3Stack.Outputs.ModelsBucketName
+    Export:
+      Name: !Sub ${AWS::StackName}-ModelsBucket
+
+  # Kinesis Outputs
+  TransactionsStreamName:
+    Description: Kinesis stream name
+    Value: !GetAtt KinesisStack.Outputs.TransactionsStreamName
+    Export:
+      Name: !Sub ${AWS::StackName}-TransactionsStream
+
+  # API Gateway Outputs
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !GetAtt APIGatewayStack.Outputs.ApiEndpoint
+    Export:
+      Name: !Sub ${AWS::StackName}-ApiEndpoint
+
+  # Step Functions Outputs
+  StateMachineArn:
+    Description: State Machine ARN
+    Value: !GetAtt StepFunctionsStack.Outputs.StateMachineArn
+    Export:
+      Name: !Sub ${AWS::StackName}-StateMachine
+
+  # CloudWatch Dashboard
+  DashboardUrl:
+    Description: CloudWatch Dashboard URL
+    Value: !GetAtt CloudWatchStack.Outputs.DashboardUrl
+    Export:
+      Name: !Sub ${AWS::StackName}-Dashboard

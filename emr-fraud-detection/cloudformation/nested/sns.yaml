@@ -1,0 +1,112 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SNS topics for EMR Fraud Detection Pipeline
+
+Parameters:
+  Environment:
+    Type: String
+  ProjectName:
+    Type: String
+  AlertEmail:
+    Type: String
+    Default: ''
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, '']]
+
+Resources:
+  FraudAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub ${ProjectName}-${Environment}-fraud-alerts
+      KmsMasterKeyId: alias/aws/sns
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  FraudAlertsEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref FraudAlertsTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  PipelineNotificationsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub ${ProjectName}-${Environment}-pipeline-notifications
+      KmsMasterKeyId: alias/aws/sns
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  PipelineNotificationsEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref PipelineNotificationsTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  FraudAlertsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref FraudAlertsTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowLambdaPublish
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref FraudAlertsTopic
+          - Sid: AllowEMRPublish
+            Effect: Allow
+            Principal:
+              Service: elasticmapreduce.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref FraudAlertsTopic
+
+  PipelineNotificationsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref PipelineNotificationsTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowStepFunctionsPublish
+            Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref PipelineNotificationsTopic
+          - Sid: AllowCloudWatchPublish
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref PipelineNotificationsTopic
+
+Outputs:
+  FraudAlertsTopicArn:
+    Description: Fraud alerts topic ARN
+    Value: !Ref FraudAlertsTopic
+
+  FraudAlertsTopicName:
+    Description: Fraud alerts topic name
+    Value: !GetAtt FraudAlertsTopic.TopicName
+
+  PipelineNotificationsTopicArn:
+    Description: Pipeline notifications topic ARN
+    Value: !Ref PipelineNotificationsTopic
+
+  PipelineNotificationsTopicName:
+    Description: Pipeline notifications topic name
+    Value: !GetAtt PipelineNotificationsTopic.TopicName

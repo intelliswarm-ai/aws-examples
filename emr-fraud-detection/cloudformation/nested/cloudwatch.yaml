@@ -1,0 +1,272 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudWatch monitoring for EMR Fraud Detection Pipeline
+
+Parameters:
+  Environment:
+    Type: String
+  ProjectName:
+    Type: String
+  KinesisStreamName:
+    Type: String
+  IngestionFunctionName:
+    Type: String
+  StreamProcessorFunctionName:
+    Type: String
+  AlertFunctionName:
+    Type: String
+  AlertsTableName:
+    Type: String
+  StateMachineName:
+    Type: String
+  AlertTopicArn:
+    Type: String
+
+Resources:
+  # Dashboard
+  FraudDetectionDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub ${ProjectName}-${Environment}
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Kinesis Stream Metrics",
+                "view": "timeSeries",
+                "stacked": false,
+                "metrics": [
+                  ["AWS/Kinesis", "IncomingRecords", "StreamName", "${KinesisStreamName}"],
+                  [".", "IncomingBytes", ".", "."],
+                  [".", "GetRecords.IteratorAgeMilliseconds", ".", "."]
+                ],
+                "region": "${AWS::Region}",
+                "period": 60
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Invocations",
+                "view": "timeSeries",
+                "stacked": false,
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${IngestionFunctionName}"],
+                  [".", ".", ".", "${StreamProcessorFunctionName}"],
+                  [".", ".", ".", "${AlertFunctionName}"]
+                ],
+                "region": "${AWS::Region}",
+                "period": 60
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Errors",
+                "view": "timeSeries",
+                "stacked": false,
+                "metrics": [
+                  ["AWS/Lambda", "Errors", "FunctionName", "${IngestionFunctionName}"],
+                  [".", ".", ".", "${StreamProcessorFunctionName}"],
+                  [".", ".", ".", "${AlertFunctionName}"]
+                ],
+                "region": "${AWS::Region}",
+                "period": 60
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Duration",
+                "view": "timeSeries",
+                "stacked": false,
+                "metrics": [
+                  ["AWS/Lambda", "Duration", "FunctionName", "${IngestionFunctionName}", {"stat": "Average"}],
+                  [".", ".", ".", "${StreamProcessorFunctionName}", {"stat": "Average"}],
+                  [".", ".", ".", "${AlertFunctionName}", {"stat": "Average"}]
+                ],
+                "region": "${AWS::Region}",
+                "period": 60
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "DynamoDB Operations",
+                "view": "timeSeries",
+                "stacked": false,
+                "metrics": [
+                  ["AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "${AlertsTableName}"],
+                  [".", "ConsumedWriteCapacityUnits", ".", "."]
+                ],
+                "region": "${AWS::Region}",
+                "period": 60
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Step Functions Executions",
+                "view": "timeSeries",
+                "stacked": false,
+                "metrics": [
+                  ["AWS/States", "ExecutionsStarted", "StateMachineArn", "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${StateMachineName}"],
+                  [".", "ExecutionsSucceeded", ".", "."],
+                  [".", "ExecutionsFailed", ".", "."]
+                ],
+                "region": "${AWS::Region}",
+                "period": 60
+              }
+            }
+          ]
+        }
+
+  # Alarms
+  KinesisIteratorAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-${Environment}-kinesis-iterator-age
+      AlarmDescription: Alert when Kinesis iterator age exceeds threshold
+      MetricName: GetRecords.IteratorAgeMilliseconds
+      Namespace: AWS/Kinesis
+      Dimensions:
+        - Name: StreamName
+          Value: !Ref KinesisStreamName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 60000
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlertTopicArn
+      TreatMissingData: notBreaching
+
+  LambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-${Environment}-lambda-errors
+      AlarmDescription: Alert when Lambda errors exceed threshold
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref StreamProcessorFunctionName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlertTopicArn
+      TreatMissingData: notBreaching
+
+  StepFunctionsFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-${Environment}-stepfunctions-failures
+      AlarmDescription: Alert when Step Functions executions fail
+      MetricName: ExecutionsFailed
+      Namespace: AWS/States
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${StateMachineName}
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref AlertTopicArn
+      TreatMissingData: notBreaching
+
+  HighFraudRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-${Environment}-high-fraud-rate
+      AlarmDescription: Alert when fraud detection rate is unusually high
+      MetricName: FraudDetected
+      Namespace: !Sub ${ProjectName}/${Environment}
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: 100
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlertTopicArn
+      TreatMissingData: notBreaching
+
+  # Log Groups
+  IngestionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${IngestionFunctionName}
+      RetentionInDays: 30
+
+  StreamProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${StreamProcessorFunctionName}
+      RetentionInDays: 30
+
+  AlertLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AlertFunctionName}
+      RetentionInDays: 30
+
+  # Metric Filters
+  FraudDetectedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref AlertLogGroup
+      FilterPattern: '[timestamp, request_id, level="INFO", message="Fraud detected*"]'
+      MetricTransformations:
+        - MetricName: FraudDetected
+          MetricNamespace: !Sub ${ProjectName}/${Environment}
+          MetricValue: '1'
+          DefaultValue: 0
+
+  TransactionsProcessedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref StreamProcessorLogGroup
+      FilterPattern: '[timestamp, request_id, level="INFO", message="Transactions processed*"]'
+      MetricTransformations:
+        - MetricName: TransactionsProcessed
+          MetricNamespace: !Sub ${ProjectName}/${Environment}
+          MetricValue: '1'
+          DefaultValue: 0
+
+Outputs:
+  DashboardUrl:
+    Description: CloudWatch Dashboard URL
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${ProjectName}-${Environment}
+
+  DashboardName:
+    Description: Dashboard name
+    Value: !Sub ${ProjectName}-${Environment}

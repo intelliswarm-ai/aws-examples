@@ -1,0 +1,50 @@
+# EMR Spark Fraud Detection Pipeline - Example Variables
+# Copy this file to terraform.tfvars and update values
+
+# General Configuration
+project_name = "fraud-detection"
+environment  = "dev"
+aws_region   = "us-east-1"
+
+# VPC Configuration
+vpc_cidr           = "10.0.0.0/16"
+availability_zones = ["us-east-1a", "us-east-1b", "us-east-1c"]
+enable_nat_gateway = true
+single_nat_gateway = true  # Set to false for prod (multi-AZ)
+
+# Kinesis Configuration
+kinesis_shard_count     = 4
+kinesis_retention_hours = 24
+
+# EMR Batch Cluster Configuration
+emr_release_label        = "emr-7.0.0"
+emr_master_instance_type = "m5.xlarge"
+emr_core_instance_type   = "m5.2xlarge"
+emr_core_instance_count  = 2
+emr_use_spot             = true
+emr_spot_bid_percentage  = 50
+
+# EMR Streaming Cluster Configuration
+streaming_enabled              = true
+streaming_master_instance_type = "m5.xlarge"
+streaming_core_instance_type   = "m5.xlarge"
+streaming_core_instance_count  = 2
+
+# ML Configuration
+fraud_threshold      = 0.7
+suspicious_threshold = 0.5
+model_version        = "v1.0"
+
+# API Configuration
+enable_api_key   = true
+api_rate_limit   = 1000
+api_burst_limit  = 2000
+
+# Alerting Configuration
+fraud_alert_email  = "fraud-alerts@example.com"
+alarm_email        = "ops-alerts@example.com"
+enable_sms_alerts  = false
+sms_phone_number   = ""  # E.164 format: +1234567890
+
+# Logging Configuration
+log_retention_days = 30
