@@ -1,0 +1,562 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'SMS Marketing Platform with Amazon Pinpoint - Messaging and Campaign Management'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+  ProjectName:
+    Type: String
+    Default: sms-marketing
+    Description: Project name prefix
+
+  KinesisShardCount:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 10
+    Description: Number of Kinesis shards
+
+  RetentionDays:
+    Type: Number
+    Default: 365
+    Description: S3 data retention in days
+
+  AlarmEmail:
+    Type: String
+    Default: ''
+    Description: Email for CloudWatch alarms
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 60
+    MemorySize: 512
+    Tracing: Active
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: INFO
+        POWERTOOLS_SERVICE_NAME: !Ref ProjectName
+    Tags:
+      Environment: !Ref Environment
+      Project: !Ref ProjectName
+
+Resources:
+  # ============================================================================
+  # KINESIS DATA STREAM
+  # ============================================================================
+  EventStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-events'
+      ShardCount: !Ref KinesisShardCount
+      RetentionPeriodHours: 24
+      StreamEncryption:
+        EncryptionType: KMS
+        KeyId: alias/aws/kinesis
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # DYNAMODB TABLES
+  # ============================================================================
+  SubscribersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-subscribers'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: phone_number
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+      KeySchema:
+        - AttributeName: phone_number
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: status-index
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  CampaignsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-campaigns'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: campaign_id
+          AttributeType: S
+        - AttributeName: created_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: campaign_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: created-index
+          KeySchema:
+            - AttributeName: created_at
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ResponsesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-responses'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: response_id
+          AttributeType: S
+        - AttributeName: campaign_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: response_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: campaign-index
+          KeySchema:
+            - AttributeName: campaign_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # S3 BUCKET
+  # ============================================================================
+  ArchiveBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-archive-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+          - Id: TransitionToGlacier
+            Status: Enabled
+            Transitions:
+              - StorageClass: GLACIER
+                TransitionInDays: 90
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ArchiveBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArchiveBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnforceSSL
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt ArchiveBucket.Arn
+              - !Sub '${ArchiveBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+
+  # ============================================================================
+  # SNS TOPICS
+  # ============================================================================
+  OptOutTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-opt-out-alerts'
+      KmsMasterKeyId: alias/aws/sns
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  OptOutEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref OptOutTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  # ============================================================================
+  # LAMBDA FUNCTIONS
+  # ============================================================================
+
+  # SMS Event Processor - Processes SMS sending events
+  SMSEventProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-sms-event-processor'
+      Handler: sms_event_processor.handler
+      CodeUri: ../src/handlers/
+      Timeout: 300
+      Description: Processes SMS campaign events and sends messages via Pinpoint
+      Environment:
+        Variables:
+          SUBSCRIBERS_TABLE: !Ref SubscribersTable
+          CAMPAIGNS_TABLE: !Ref CampaignsTable
+          KINESIS_STREAM: !Ref EventStream
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SubscribersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CampaignsTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - kinesis:PutRecord
+                - kinesis:PutRecords
+              Resource: !GetAtt EventStream.Arn
+            - Effect: Allow
+              Action:
+                - mobiletargeting:SendMessages
+                - mobiletargeting:GetApp
+              Resource: '*'
+
+  SMSEventProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${SMSEventProcessorFunction}'
+      RetentionInDays: 30
+
+  # Response Handler - Handles incoming SMS responses
+  ResponseHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-response-handler'
+      Handler: response_handler.handler
+      CodeUri: ../src/handlers/
+      MemorySize: 256
+      Description: Handles incoming SMS responses and opt-out requests
+      Environment:
+        Variables:
+          SUBSCRIBERS_TABLE: !Ref SubscribersTable
+          RESPONSES_TABLE: !Ref ResponsesTable
+          OPTOUT_TOPIC: !Ref OptOutTopic
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SubscribersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ResponsesTable
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt OptOutTopic.TopicName
+
+  ResponseHandlerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ResponseHandlerFunction}'
+      RetentionInDays: 30
+
+  # Analytics Processor - Processes campaign analytics
+  AnalyticsProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-analytics-processor'
+      Handler: analytics_processor.handler
+      CodeUri: ../src/handlers/
+      Timeout: 300
+      Description: Processes and aggregates campaign analytics data
+      Environment:
+        Variables:
+          ARCHIVE_BUCKET: !Ref ArchiveBucket
+          KINESIS_STREAM: !Ref EventStream
+          CAMPAIGNS_TABLE: !Ref CampaignsTable
+      Events:
+        KinesisEvent:
+          Type: Kinesis
+          Properties:
+            Stream: !GetAtt EventStream.Arn
+            StartingPosition: LATEST
+            BatchSize: 100
+            MaximumBatchingWindowInSeconds: 30
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref ArchiveBucket
+        - DynamoDBReadPolicy:
+            TableName: !Ref CampaignsTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - kinesis:GetRecords
+                - kinesis:GetShardIterator
+                - kinesis:DescribeStream
+                - kinesis:DescribeStreamSummary
+                - kinesis:ListShards
+              Resource: !GetAtt EventStream.Arn
+
+  AnalyticsProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AnalyticsProcessorFunction}'
+      RetentionInDays: 30
+
+  # Archive Consumer - Archives events to S3
+  ArchiveConsumerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-archive-consumer'
+      Handler: archive_consumer.handler
+      CodeUri: ../src/handlers/
+      MemorySize: 256
+      Timeout: 120
+      Description: Archives SMS events to S3 for long-term storage
+      Environment:
+        Variables:
+          ARCHIVE_BUCKET: !Ref ArchiveBucket
+      Events:
+        KinesisEvent:
+          Type: Kinesis
+          Properties:
+            Stream: !GetAtt EventStream.Arn
+            StartingPosition: LATEST
+            BatchSize: 500
+            MaximumBatchingWindowInSeconds: 60
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref ArchiveBucket
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - kinesis:GetRecords
+                - kinesis:GetShardIterator
+                - kinesis:DescribeStream
+                - kinesis:DescribeStreamSummary
+                - kinesis:ListShards
+              Resource: !GetAtt EventStream.Arn
+
+  ArchiveConsumerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ArchiveConsumerFunction}'
+      RetentionInDays: 30
+
+  # ============================================================================
+  # CLOUDWATCH MONITORING
+  # ============================================================================
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasAlarmEmail
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-alarms'
+
+  AlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  SMSEventProcessorErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-sms-processor-errors'
+      AlarmDescription: SMS Event Processor Lambda errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SMSEventProcessorFunction
+      AlarmActions:
+        - !If [HasAlarmEmail, !Ref AlarmTopic, !Ref 'AWS::NoValue']
+
+  MessagingDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${ProjectName}-${Environment}-dashboard'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Kinesis Incoming Records",
+                "metrics": [
+                  ["AWS/Kinesis", "IncomingRecords", "StreamName", "${EventStream}"]
+                ],
+                "period": 60,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Invocations",
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${SMSEventProcessorFunction}"],
+                  [".", ".", ".", "${ResponseHandlerFunction}"],
+                  [".", ".", ".", "${AnalyticsProcessorFunction}"],
+                  [".", ".", ".", "${ArchiveConsumerFunction}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Errors",
+                "metrics": [
+                  ["AWS/Lambda", "Errors", "FunctionName", "${SMSEventProcessorFunction}"],
+                  [".", ".", ".", "${ResponseHandlerFunction}"],
+                  [".", ".", ".", "${AnalyticsProcessorFunction}"],
+                  [".", ".", ".", "${ArchiveConsumerFunction}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Duration",
+                "metrics": [
+                  ["AWS/Lambda", "Duration", "FunctionName", "${SMSEventProcessorFunction}"],
+                  [".", ".", ".", "${ResponseHandlerFunction}"],
+                  [".", ".", ".", "${AnalyticsProcessorFunction}"],
+                  [".", ".", ".", "${ArchiveConsumerFunction}"]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  EventStreamName:
+    Description: Kinesis event stream name
+    Value: !Ref EventStream
+
+  EventStreamArn:
+    Description: Kinesis event stream ARN
+    Value: !GetAtt EventStream.Arn
+
+  SubscribersTableName:
+    Description: DynamoDB subscribers table name
+    Value: !Ref SubscribersTable
+
+  CampaignsTableName:
+    Description: DynamoDB campaigns table name
+    Value: !Ref CampaignsTable
+
+  ResponsesTableName:
+    Description: DynamoDB responses table name
+    Value: !Ref ResponsesTable
+
+  ArchiveBucketName:
+    Description: S3 archive bucket name
+    Value: !Ref ArchiveBucket
+
+  OptOutTopicArn:
+    Description: SNS opt-out topic ARN
+    Value: !Ref OptOutTopic
+
+  SMSEventProcessorFunction:
+    Description: SMS Event Processor Lambda function ARN
+    Value: !GetAtt SMSEventProcessorFunction.Arn
+
+  ResponseHandlerFunction:
+    Description: Response Handler Lambda function ARN
+    Value: !GetAtt ResponseHandlerFunction.Arn
+
+  AnalyticsProcessorFunction:
+    Description: Analytics Processor Lambda function ARN
+    Value: !GetAtt AnalyticsProcessorFunction.Arn
+
+  ArchiveConsumerFunction:
+    Description: Archive Consumer Lambda function ARN
+    Value: !GetAtt ArchiveConsumerFunction.Arn

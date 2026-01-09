@@ -1,0 +1,186 @@
+{
+  "Comment": "Task Processing Workflow - Validates, processes, and finalizes tasks with error handling",
+  "StartAt": "ValidateTask",
+  "States": {
+    "ValidateTask": {
+      "Type": "Task",
+      "Resource": "${ValidateTaskArn}",
+      "Parameters": {
+        "taskId.$": "$.taskId",
+        "payload.$": "$.payload"
+      },
+      "ResultPath": "$.validation",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["ValidationError"],
+          "ResultPath": "$.error",
+          "Next": "SendValidationFailureNotification"
+        },
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "HandleError"
+        }
+      ],
+      "Next": "IsValidTask"
+    },
+    "IsValidTask": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.validation.isValid",
+          "BooleanEquals": true,
+          "Next": "ProcessTask"
+        }
+      ],
+      "Default": "SendValidationFailureNotification"
+    },
+    "ProcessTask": {
+      "Type": "Task",
+      "Resource": "${ProcessTaskArn}",
+      "Parameters": {
+        "taskId.$": "$.taskId",
+        "payload.$": "$.payload",
+        "validation.$": "$.validation"
+      },
+      "ResultPath": "$.processing",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": ["RetryableError"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "HandleError"
+        }
+      ],
+      "Next": "IsProcessingComplete"
+    },
+    "IsProcessingComplete": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.processing.status",
+          "StringEquals": "COMPLETED",
+          "Next": "FinalizeTask"
+        },
+        {
+          "Variable": "$.processing.status",
+          "StringEquals": "PENDING_RETRY",
+          "Next": "WaitForRetry"
+        }
+      ],
+      "Default": "HandleProcessingError"
+    },
+    "WaitForRetry": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "ProcessTask"
+    },
+    "FinalizeTask": {
+      "Type": "Task",
+      "Resource": "${FinalizeTaskArn}",
+      "Parameters": {
+        "taskId.$": "$.taskId",
+        "payload.$": "$.payload",
+        "validation.$": "$.validation",
+        "processing.$": "$.processing"
+      },
+      "ResultPath": "$.finalization",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "HandleError"
+        }
+      ],
+      "Next": "SendSuccessNotification"
+    },
+    "SendSuccessNotification": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${NotificationTopicArn}",
+        "Subject": "Task Processing Complete",
+        "Message.$": "States.Format('Task {} completed successfully. Status: {}', $.taskId, $.finalization.status)"
+      },
+      "ResultPath": "$.notification",
+      "End": true
+    },
+    "SendValidationFailureNotification": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${NotificationTopicArn}",
+        "Subject": "Task Validation Failed",
+        "Message.$": "States.Format('Task {} failed validation. Reason: {}', $.taskId, $.validation.reason)"
+      },
+      "ResultPath": "$.notification",
+      "Next": "FailValidation"
+    },
+    "FailValidation": {
+      "Type": "Fail",
+      "Error": "ValidationFailed",
+      "Cause": "Task failed validation checks"
+    },
+    "HandleProcessingError": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${NotificationTopicArn}",
+        "Subject": "Task Processing Error",
+        "Message.$": "States.Format('Task {} processing returned unexpected status: {}', $.taskId, $.processing.status)"
+      },
+      "ResultPath": "$.notification",
+      "Next": "FailProcessing"
+    },
+    "FailProcessing": {
+      "Type": "Fail",
+      "Error": "ProcessingFailed",
+      "Cause": "Task processing returned unexpected status"
+    },
+    "HandleError": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${NotificationTopicArn}",
+        "Subject": "Task Workflow Error",
+        "Message.$": "States.Format('Task {} encountered an error: {}', $.taskId, $.error.Cause)"
+      },
+      "ResultPath": "$.notification",
+      "Next": "FailWorkflow"
+    },
+    "FailWorkflow": {
+      "Type": "Fail",
+      "Error": "WorkflowError",
+      "Cause": "An unrecoverable error occurred in the workflow"
+    }
+  }
+}

@@ -1,0 +1,818 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Intelligent Document Processing Platform - ML-powered extraction, analysis, and insights'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+  ProjectName:
+    Type: String
+    Default: doc-proc
+    Description: Project name prefix
+
+  BedrockModelId:
+    Type: String
+    Default: anthropic.claude-3-sonnet-20240229-v1:0
+    Description: Bedrock model ID for document insights
+
+  BedrockMaxTokens:
+    Type: Number
+    Default: 4096
+    Description: Maximum tokens for Bedrock responses
+
+  EnablePiiDetection:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable PII detection in documents
+
+  EnableModeration:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable content moderation
+
+  AlarmEmail:
+    Type: String
+    Default: ''
+    Description: Email for CloudWatch alarms
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
+  IsProd: !Equals [!Ref Environment, 'prod']
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 60
+    MemorySize: 256
+    Tracing: Active
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: INFO
+        POWERTOOLS_SERVICE_NAME: !Ref ProjectName
+    Tags:
+      Environment: !Ref Environment
+      Project: !Ref ProjectName
+
+Resources:
+  # ============================================================================
+  # S3 BUCKETS
+  # ============================================================================
+  RawBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-raw-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [PUT, POST]
+            AllowedOrigins: ['*']
+            MaxAge: 3600
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Function: !GetAtt IngestionFunction.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: input/
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ProcessedBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-processed-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ModelBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-models-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # DYNAMODB TABLES
+  # ============================================================================
+  DocumentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-documents'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: document_id
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: created_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: document_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: status-index
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # SQS QUEUES
+  # ============================================================================
+  ProcessingDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-${Environment}-processing-dlq'
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ProcessingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-${Environment}-processing'
+      VisibilityTimeout: 900
+      MessageRetentionPeriod: 1209600
+      ReceiveMessageWaitTimeSeconds: 20
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ProcessingDLQ.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # SNS TOPICS
+  # ============================================================================
+  SuccessTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-success'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  FailureTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-failure'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-alerts'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # LAMBDA FUNCTIONS
+  # ============================================================================
+
+  # Document Ingestion Function
+  IngestionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-document-ingestion'
+      Handler: document_ingestion.handler
+      CodeUri: ../src/handlers/
+      Timeout: 60
+      MemorySize: 256
+      Description: Ingests documents from S3 and starts processing workflow
+      Environment:
+        Variables:
+          DOCUMENTS_TABLE: !Ref DocumentsTable
+          RAW_BUCKET: !Ref RawBucket
+          PROCESSED_BUCKET: !Ref ProcessedBucket
+          WORKFLOW_ARN: !Ref DocumentProcessingWorkflow
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DocumentsTable
+        - S3ReadPolicy:
+            BucketName: !Ref RawBucket
+        - StepFunctionsExecutionPolicy:
+            StateMachineName: !GetAtt DocumentProcessingWorkflow.Name
+
+  IngestionS3Permission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref IngestionFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub 'arn:aws:s3:::${ProjectName}-${Environment}-raw-${AWS::AccountId}'
+
+  IngestionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${IngestionFunction}'
+      RetentionInDays: 30
+
+  # Text Extraction Function
+  ExtractionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-text-extraction'
+      Handler: text_extraction.handler
+      CodeUri: ../src/handlers/
+      Timeout: 300
+      MemorySize: 512
+      Description: Extracts text using Amazon Textract
+      Environment:
+        Variables:
+          DOCUMENTS_TABLE: !Ref DocumentsTable
+          RAW_BUCKET: !Ref RawBucket
+          PROCESSED_BUCKET: !Ref ProcessedBucket
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DocumentsTable
+        - S3ReadPolicy:
+            BucketName: !Ref RawBucket
+        - S3CrudPolicy:
+            BucketName: !Ref ProcessedBucket
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - textract:DetectDocumentText
+                - textract:AnalyzeDocument
+                - textract:StartDocumentTextDetection
+                - textract:GetDocumentTextDetection
+              Resource: '*'
+
+  ExtractionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ExtractionFunction}'
+      RetentionInDays: 30
+
+  # Audio Transcription Function
+  TranscriptionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-audio-transcription'
+      Handler: audio_transcription.handler
+      CodeUri: ../src/handlers/
+      Timeout: 300
+      MemorySize: 256
+      Description: Transcribes audio using Amazon Transcribe
+      Environment:
+        Variables:
+          DOCUMENTS_TABLE: !Ref DocumentsTable
+          RAW_BUCKET: !Ref RawBucket
+          PROCESSED_BUCKET: !Ref ProcessedBucket
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DocumentsTable
+        - S3ReadPolicy:
+            BucketName: !Ref RawBucket
+        - S3CrudPolicy:
+            BucketName: !Ref ProcessedBucket
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - transcribe:StartTranscriptionJob
+                - transcribe:GetTranscriptionJob
+                - transcribe:ListTranscriptionJobs
+              Resource: '*'
+
+  TranscriptionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${TranscriptionFunction}'
+      RetentionInDays: 30
+
+  # Content Analysis Function
+  AnalysisFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-content-analysis'
+      Handler: content_analysis.handler
+      CodeUri: ../src/handlers/
+      Timeout: 120
+      MemorySize: 512
+      Description: Analyzes content using Comprehend and Rekognition
+      Environment:
+        Variables:
+          DOCUMENTS_TABLE: !Ref DocumentsTable
+          ENABLE_PII_DETECTION: !Ref EnablePiiDetection
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DocumentsTable
+        - S3ReadPolicy:
+            BucketName: !Ref RawBucket
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - comprehend:DetectEntities
+                - comprehend:DetectSentiment
+                - comprehend:DetectKeyPhrases
+                - comprehend:DetectPiiEntities
+                - comprehend:DetectDominantLanguage
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - rekognition:DetectLabels
+                - rekognition:DetectText
+                - rekognition:DetectModerationLabels
+              Resource: '*'
+
+  AnalysisLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AnalysisFunction}'
+      RetentionInDays: 30
+
+  # SageMaker Inference Function
+  InferenceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-sagemaker-inference'
+      Handler: sagemaker_inference.handler
+      CodeUri: ../src/handlers/
+      Timeout: 60
+      MemorySize: 256
+      Description: Classifies documents using SageMaker endpoint
+      Environment:
+        Variables:
+          DOCUMENTS_TABLE: !Ref DocumentsTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DocumentsTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - sagemaker:InvokeEndpoint
+              Resource: !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/*'
+
+  InferenceLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${InferenceFunction}'
+      RetentionInDays: 30
+
+  # Bedrock Generation Function
+  BedrockFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-bedrock-generation'
+      Handler: bedrock_generation.handler
+      CodeUri: ../src/handlers/
+      Timeout: 120
+      MemorySize: 1024
+      Description: Generates summaries and Q&A using Amazon Bedrock
+      Environment:
+        Variables:
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          BEDROCK_MAX_TOKENS: !Ref BedrockMaxTokens
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/*'
+
+  BedrockLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${BedrockFunction}'
+      RetentionInDays: 30
+
+  # Workflow Orchestration Function
+  WorkflowFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-workflow-orchestration'
+      Handler: workflow_orchestration.handler
+      CodeUri: ../src/handlers/
+      Timeout: 60
+      MemorySize: 256
+      Description: Handles workflow routing and finalization
+      Environment:
+        Variables:
+          DOCUMENTS_TABLE: !Ref DocumentsTable
+          PROCESSED_BUCKET: !Ref ProcessedBucket
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DocumentsTable
+        - S3CrudPolicy:
+            BucketName: !Ref ProcessedBucket
+
+  WorkflowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${WorkflowFunction}'
+      RetentionInDays: 30
+
+  # Notification Function
+  NotificationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-notification'
+      Handler: notification.handler
+      CodeUri: ../src/handlers/
+      Timeout: 30
+      MemorySize: 256
+      Description: Handles SNS notifications
+      Environment:
+        Variables:
+          SUCCESS_TOPIC_ARN: !Ref SuccessTopic
+          FAILURE_TOPIC_ARN: !Ref FailureTopic
+          ALERT_TOPIC_ARN: !Ref AlertTopic
+      Policies:
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt SuccessTopic.TopicName
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt FailureTopic.TopicName
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt AlertTopic.TopicName
+
+  NotificationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${NotificationFunction}'
+      RetentionInDays: 30
+
+  # ============================================================================
+  # STEP FUNCTIONS WORKFLOW
+  # ============================================================================
+  DocumentProcessingWorkflow:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-document-workflow'
+      DefinitionUri: ../state-machine/definition.asl.json
+      DefinitionSubstitutions:
+        WorkflowLambdaArn: !GetAtt WorkflowFunction.Arn
+        ExtractionLambdaArn: !GetAtt ExtractionFunction.Arn
+        TranscriptionLambdaArn: !GetAtt TranscriptionFunction.Arn
+        AnalysisLambdaArn: !GetAtt AnalysisFunction.Arn
+        InferenceLambdaArn: !GetAtt InferenceFunction.Arn
+        BedrockLambdaArn: !GetAtt BedrockFunction.Arn
+        SuccessTopicArn: !Ref SuccessTopic
+        FailureTopicArn: !Ref FailureTopic
+      Logging:
+        Level: ALL
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt WorkflowStepFunctionsLogGroup.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref WorkflowFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ExtractionFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref TranscriptionFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref AnalysisFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref InferenceFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref BedrockFunction
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt SuccessTopic.TopicName
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt FailureTopic.TopicName
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogDelivery
+                - logs:GetLogDelivery
+                - logs:UpdateLogDelivery
+                - logs:DeleteLogDelivery
+                - logs:ListLogDeliveries
+                - logs:PutResourcePolicy
+                - logs:DescribeResourcePolicies
+                - logs:DescribeLogGroups
+              Resource: '*'
+      Tags:
+        Environment: !Ref Environment
+        Project: !Ref ProjectName
+
+  WorkflowStepFunctionsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/vendedlogs/states/${ProjectName}-${Environment}-workflow'
+      RetentionInDays: 30
+
+  # ============================================================================
+  # API GATEWAY
+  # ============================================================================
+  ApiGateway:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref Environment
+      CorsConfiguration:
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+        AllowOrigins:
+          - '*'
+      Tags:
+        Environment: !Ref Environment
+        Project: !Ref ProjectName
+
+  # API Handler Function
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-api'
+      Handler: api_handler.handler
+      CodeUri: ../src/handlers/
+      Timeout: 30
+      MemorySize: 256
+      Description: REST API for document management
+      Environment:
+        Variables:
+          DOCUMENTS_TABLE: !Ref DocumentsTable
+          RAW_BUCKET: !Ref RawBucket
+          PROCESSED_BUCKET: !Ref ProcessedBucket
+          WORKFLOW_ARN: !Ref DocumentProcessingWorkflow
+      Events:
+        GetDocument:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /documents/{document_id}
+            Method: GET
+        ListDocuments:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /documents
+            Method: GET
+        GetUploadUrl:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /upload-url
+            Method: POST
+        GetHealth:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /health
+            Method: GET
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref DocumentsTable
+        - S3ReadPolicy:
+            BucketName: !Ref RawBucket
+        - S3ReadPolicy:
+            BucketName: !Ref ProcessedBucket
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub '${RawBucket.Arn}/input/*'
+
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ApiFunction}'
+      RetentionInDays: 30
+
+  # ============================================================================
+  # CLOUDWATCH MONITORING
+  # ============================================================================
+  AlarmTopicNotification:
+    Type: AWS::SNS::Topic
+    Condition: HasAlarmEmail
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-alarm-notifications'
+
+  AlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopicNotification
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  AnalyticsDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${ProjectName}-${Environment}-dashboard'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Document Processing Lambda Invocations",
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${IngestionFunction}"],
+                  [".", ".", ".", "${ExtractionFunction}"],
+                  [".", ".", ".", "${AnalysisFunction}"],
+                  [".", ".", ".", "${BedrockFunction}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Errors",
+                "metrics": [
+                  ["AWS/Lambda", "Errors", "FunctionName", "${IngestionFunction}"],
+                  [".", ".", ".", "${ExtractionFunction}"],
+                  [".", ".", ".", "${AnalysisFunction}"],
+                  [".", ".", ".", "${BedrockFunction}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Step Functions Executions",
+                "metrics": [
+                  ["AWS/States", "ExecutionsStarted", "StateMachineArn", "${DocumentProcessingWorkflow}"],
+                  [".", "ExecutionsSucceeded", ".", "."],
+                  [".", "ExecutionsFailed", ".", "."]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "SQS Queue Metrics",
+                "metrics": [
+                  ["AWS/SQS", "NumberOfMessagesReceived", "QueueName", "${ProcessingQueue.QueueName}"],
+                  [".", "ApproximateNumberOfMessagesVisible", ".", "."],
+                  [".", "NumberOfMessagesReceived", ".", "${ProcessingDLQ.QueueName}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+
+  RawBucket:
+    Description: Raw documents S3 bucket
+    Value: !Ref RawBucket
+
+  ProcessedBucket:
+    Description: Processed documents S3 bucket
+    Value: !Ref ProcessedBucket
+
+  ModelBucket:
+    Description: ML models S3 bucket
+    Value: !Ref ModelBucket
+
+  DocumentsTableName:
+    Description: Documents DynamoDB table name
+    Value: !Ref DocumentsTable
+
+  WorkflowArn:
+    Description: Document processing workflow ARN
+    Value: !Ref DocumentProcessingWorkflow
+
+  SuccessTopicArn:
+    Description: Success notifications SNS topic ARN
+    Value: !Ref SuccessTopic
+
+  FailureTopicArn:
+    Description: Failure notifications SNS topic ARN
+    Value: !Ref FailureTopic
+
+  IngestionFunctionArn:
+    Description: Document ingestion Lambda function ARN
+    Value: !GetAtt IngestionFunction.Arn
+
+  ExtractionFunctionArn:
+    Description: Text extraction Lambda function ARN
+    Value: !GetAtt ExtractionFunction.Arn
+
+  AnalysisFunctionArn:
+    Description: Content analysis Lambda function ARN
+    Value: !GetAtt AnalysisFunction.Arn
+
+  BedrockFunctionArn:
+    Description: Bedrock generation Lambda function ARN
+    Value: !GetAtt BedrockFunction.Arn

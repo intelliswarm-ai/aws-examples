@@ -1,0 +1,50 @@
+version = 0.1
+
+[default]
+[default.global.parameters]
+stack_name = "data-lake-dev"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.validate.parameters]
+lint = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND"
+confirm_changeset = true
+resolve_s3 = true
+s3_prefix = "data-lake"
+region = "eu-central-1"
+parameter_overrides = "Environment=\"dev\" EnableLakeFormation=\"false\""
+
+[default.sync.parameters]
+watch = true
+
+# Development environment
+[dev]
+[dev.deploy.parameters]
+stack_name = "data-lake-dev"
+s3_prefix = "data-lake-dev"
+region = "eu-central-1"
+confirm_changeset = false
+parameter_overrides = "Environment=\"dev\" EnableLakeFormation=\"false\" GlueWorkerCount=\"2\""
+
+# Staging environment
+[staging]
+[staging.deploy.parameters]
+stack_name = "data-lake-staging"
+s3_prefix = "data-lake-staging"
+region = "eu-central-1"
+confirm_changeset = true
+parameter_overrides = "Environment=\"staging\" EnableLakeFormation=\"true\" GlueWorkerCount=\"4\""
+
+# Production environment
+[prod]
+[prod.deploy.parameters]
+stack_name = "data-lake-prod"
+s3_prefix = "data-lake-prod"
+region = "eu-central-1"
+confirm_changeset = true
+parameter_overrides = "Environment=\"prod\" EnableLakeFormation=\"true\" GlueWorkerCount=\"6\" GlueWorkerType=\"G.2X\""

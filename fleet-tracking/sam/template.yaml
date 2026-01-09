@@ -1,0 +1,611 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'GPS Fleet Tracking System - Real-time vehicle tracking with Kinesis streaming'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+  ProjectName:
+    Type: String
+    Default: fleet-tracking
+    Description: Project name prefix
+
+  KinesisShardCount:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 10
+    Description: Number of Kinesis shards
+
+  KinesisRetentionHours:
+    Type: Number
+    Default: 24
+    MinValue: 24
+    MaxValue: 8760
+    Description: Kinesis data retention in hours
+
+  ConsumerBatchSize:
+    Type: Number
+    Default: 100
+    MinValue: 1
+    MaxValue: 10000
+    Description: Kinesis consumer batch size
+
+  AlarmEmail:
+    Type: String
+    Default: ''
+    Description: Email for CloudWatch alarms
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 60
+    MemorySize: 512
+    Tracing: Active
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: INFO
+        POWERTOOLS_SERVICE_NAME: !Ref ProjectName
+    Tags:
+      Environment: !Ref Environment
+      Project: !Ref ProjectName
+
+Resources:
+  # ============================================================================
+  # KINESIS DATA STREAM
+  # ============================================================================
+  GPSDataStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-gps-coordinates'
+      ShardCount: !Ref KinesisShardCount
+      RetentionPeriodHours: !Ref KinesisRetentionHours
+      StreamEncryption:
+        EncryptionType: KMS
+        KeyId: alias/aws/kinesis
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # DYNAMODB TABLES
+  # ============================================================================
+  PositionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-positions'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: truck_id
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: truck_id
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  GeofencesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-geofences'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: geofence_id
+          AttributeType: S
+        - AttributeName: name
+          AttributeType: S
+      KeySchema:
+        - AttributeName: geofence_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: name-index
+          KeySchema:
+            - AttributeName: name
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  AlertsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-alerts'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: alert_id
+          AttributeType: S
+        - AttributeName: truck_id
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: alert_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: truck-timestamp-index
+          KeySchema:
+            - AttributeName: truck_id
+              KeyType: HASH
+            - AttributeName: timestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # S3 BUCKET
+  # ============================================================================
+  ArchiveBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-archive-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+          - Id: TransitionToGlacier
+            Status: Enabled
+            Transitions:
+              - StorageClass: GLACIER
+                TransitionInDays: 90
+          - Id: ExpireOldObjects
+            Status: Enabled
+            ExpirationInDays: 365
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ArchiveBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArchiveBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnforceSSL
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt ArchiveBucket.Arn
+              - !Sub '${ArchiveBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+
+  # ============================================================================
+  # SNS TOPICS
+  # ============================================================================
+  GeofenceAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-geofence-alerts'
+      KmsMasterKeyId: alias/aws/sns
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref GeofenceAlertsTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  # ============================================================================
+  # LAMBDA FUNCTIONS
+  # ============================================================================
+
+  # GPS Producer Function - Triggered by EventBridge Schedule
+  GPSProducerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-gps-producer'
+      Handler: gps_producer.handler
+      CodeUri: ../src/handlers/
+      MemorySize: 256
+      Description: Simulates GPS coordinates from fleet vehicles
+      Environment:
+        Variables:
+          KINESIS_STREAM_NAME: !Ref GPSDataStream
+      Events:
+        ScheduleEvent:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+            Description: Trigger GPS producer every minute
+            Enabled: true
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - kinesis:PutRecord
+                - kinesis:PutRecords
+              Resource: !GetAtt GPSDataStream.Arn
+
+  GPSProducerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${GPSProducerFunction}'
+      RetentionInDays: 30
+
+  # Dashboard Consumer Function - Triggered by Kinesis
+  DashboardConsumerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-dashboard-consumer'
+      Handler: dashboard_consumer.handler
+      CodeUri: ../src/handlers/
+      Description: Processes GPS records and updates dashboard positions
+      Environment:
+        Variables:
+          POSITIONS_TABLE: !Ref PositionsTable
+      Events:
+        KinesisEvent:
+          Type: Kinesis
+          Properties:
+            Stream: !GetAtt GPSDataStream.Arn
+            StartingPosition: LATEST
+            BatchSize: !Ref ConsumerBatchSize
+            MaximumBatchingWindowInSeconds: 10
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PositionsTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - kinesis:GetRecords
+                - kinesis:GetShardIterator
+                - kinesis:DescribeStream
+                - kinesis:DescribeStreamSummary
+                - kinesis:ListShards
+              Resource: !GetAtt GPSDataStream.Arn
+
+  DashboardConsumerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${DashboardConsumerFunction}'
+      RetentionInDays: 30
+
+  # Geofence Consumer Function - Triggered by Kinesis
+  GeofenceConsumerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-geofence-consumer'
+      Handler: geofence_consumer.handler
+      CodeUri: ../src/handlers/
+      Description: Checks GPS positions against geofences and sends alerts
+      Environment:
+        Variables:
+          GEOFENCES_TABLE: !Ref GeofencesTable
+          ALERTS_TOPIC_ARN: !Ref GeofenceAlertsTopic
+      Events:
+        KinesisEvent:
+          Type: Kinesis
+          Properties:
+            Stream: !GetAtt GPSDataStream.Arn
+            StartingPosition: LATEST
+            BatchSize: !Ref ConsumerBatchSize
+            MaximumBatchingWindowInSeconds: 10
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref GeofencesTable
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt GeofenceAlertsTopic.TopicName
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - kinesis:GetRecords
+                - kinesis:GetShardIterator
+                - kinesis:DescribeStream
+                - kinesis:DescribeStreamSummary
+                - kinesis:ListShards
+              Resource: !GetAtt GPSDataStream.Arn
+
+  GeofenceConsumerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${GeofenceConsumerFunction}'
+      RetentionInDays: 30
+
+  # Archive Consumer Function - Triggered by Kinesis
+  ArchiveConsumerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-archive-consumer'
+      Handler: archive_consumer.handler
+      CodeUri: ../src/handlers/
+      MemorySize: 256
+      Description: Archives GPS records to S3 for long-term storage
+      Environment:
+        Variables:
+          ARCHIVE_BUCKET: !Ref ArchiveBucket
+      Events:
+        KinesisEvent:
+          Type: Kinesis
+          Properties:
+            Stream: !GetAtt GPSDataStream.Arn
+            StartingPosition: LATEST
+            BatchSize: !Ref ConsumerBatchSize
+            MaximumBatchingWindowInSeconds: 60
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref ArchiveBucket
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - kinesis:GetRecords
+                - kinesis:GetShardIterator
+                - kinesis:DescribeStream
+                - kinesis:DescribeStreamSummary
+                - kinesis:ListShards
+              Resource: !GetAtt GPSDataStream.Arn
+
+  ArchiveConsumerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ArchiveConsumerFunction}'
+      RetentionInDays: 30
+
+  # ============================================================================
+  # CLOUDWATCH MONITORING
+  # ============================================================================
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasAlarmEmail
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-alarms'
+
+  AlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  KinesisWriteProvisionedThroughputExceeded:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-kinesis-write-exceeded'
+      AlarmDescription: Kinesis write throughput exceeded
+      MetricName: WriteProvisionedThroughputExceeded
+      Namespace: AWS/Kinesis
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: StreamName
+          Value: !Ref GPSDataStream
+      AlarmActions:
+        - !If [HasAlarmEmail, !Ref AlarmTopic, !Ref 'AWS::NoValue']
+
+  KinesisIteratorAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-kinesis-iterator-age'
+      AlarmDescription: Kinesis iterator age too high
+      MetricName: GetRecords.IteratorAgeMilliseconds
+      Namespace: AWS/Kinesis
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 300000
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: StreamName
+          Value: !Ref GPSDataStream
+      AlarmActions:
+        - !If [HasAlarmEmail, !Ref AlarmTopic, !Ref 'AWS::NoValue']
+
+  DashboardConsumerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-dashboard-consumer-errors'
+      AlarmDescription: Dashboard consumer Lambda errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DashboardConsumerFunction
+      AlarmActions:
+        - !If [HasAlarmEmail, !Ref AlarmTopic, !Ref 'AWS::NoValue']
+
+  GPSTrackingDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${ProjectName}-${Environment}-dashboard'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Kinesis Incoming Records",
+                "metrics": [
+                  ["AWS/Kinesis", "IncomingRecords", "StreamName", "${GPSDataStream}"]
+                ],
+                "period": 60,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Kinesis Iterator Age",
+                "metrics": [
+                  ["AWS/Kinesis", "GetRecords.IteratorAgeMilliseconds", "StreamName", "${GPSDataStream}"]
+                ],
+                "period": 60,
+                "stat": "Maximum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Invocations",
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${GPSProducerFunction}"],
+                  [".", ".", ".", "${DashboardConsumerFunction}"],
+                  [".", ".", ".", "${GeofenceConsumerFunction}"],
+                  [".", ".", ".", "${ArchiveConsumerFunction}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Errors",
+                "metrics": [
+                  ["AWS/Lambda", "Errors", "FunctionName", "${GPSProducerFunction}"],
+                  [".", ".", ".", "${DashboardConsumerFunction}"],
+                  [".", ".", ".", "${GeofenceConsumerFunction}"],
+                  [".", ".", ".", "${ArchiveConsumerFunction}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  KinesisStreamName:
+    Description: Kinesis stream name
+    Value: !Ref GPSDataStream
+
+  KinesisStreamArn:
+    Description: Kinesis stream ARN
+    Value: !GetAtt GPSDataStream.Arn
+
+  PositionsTableName:
+    Description: DynamoDB positions table name
+    Value: !Ref PositionsTable
+
+  GeofencesTableName:
+    Description: DynamoDB geofences table name
+    Value: !Ref GeofencesTable
+
+  AlertsTableName:
+    Description: DynamoDB alerts table name
+    Value: !Ref AlertsTable
+
+  ArchiveBucketName:
+    Description: S3 archive bucket name
+    Value: !Ref ArchiveBucket
+
+  AlertsTopicArn:
+    Description: SNS alerts topic ARN
+    Value: !Ref GeofenceAlertsTopic
+
+  GPSProducerFunction:
+    Description: GPS producer Lambda function ARN
+    Value: !GetAtt GPSProducerFunction.Arn
+
+  DashboardConsumerFunction:
+    Description: Dashboard consumer Lambda function ARN
+    Value: !GetAtt DashboardConsumerFunction.Arn
+
+  GeofenceConsumerFunction:
+    Description: Geofence consumer Lambda function ARN
+    Value: !GetAtt GeofenceConsumerFunction.Arn
+
+  ArchiveConsumerFunction:
+    Description: Archive consumer Lambda function ARN
+    Value: !GetAtt ArchiveConsumerFunction.Arn

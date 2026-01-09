@@ -1,0 +1,56 @@
+version = 0.1
+
+[default]
+[default.global.parameters]
+stack_name = "sms-marketing-dev"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.validate.parameters]
+lint = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND"
+confirm_changeset = true
+resolve_s3 = true
+s3_prefix = "sms-marketing"
+region = "eu-central-1"
+parameter_overrides = "Environment=\"dev\""
+
+[default.sync.parameters]
+watch = true
+
+[default.local_start_api.parameters]
+warm_containers = "EAGER"
+
+[default.local_start_lambda.parameters]
+warm_containers = "EAGER"
+
+# Development environment
+[dev]
+[dev.deploy.parameters]
+stack_name = "sms-marketing-dev"
+s3_prefix = "sms-marketing-dev"
+region = "eu-central-1"
+confirm_changeset = false
+parameter_overrides = "Environment=\"dev\""
+
+# Staging environment
+[staging]
+[staging.deploy.parameters]
+stack_name = "sms-marketing-staging"
+s3_prefix = "sms-marketing-staging"
+region = "eu-central-1"
+confirm_changeset = true
+parameter_overrides = "Environment=\"staging\""
+
+# Production environment
+[prod]
+[prod.deploy.parameters]
+stack_name = "sms-marketing-prod"
+s3_prefix = "sms-marketing-prod"
+region = "eu-central-1"
+confirm_changeset = true
+parameter_overrides = "Environment=\"prod\""

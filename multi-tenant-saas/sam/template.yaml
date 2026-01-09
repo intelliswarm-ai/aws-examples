@@ -1,0 +1,990 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Enterprise Multi-Tenant SaaS Platform - GenAI-powered email and CRM with tenant isolation'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+  ProjectName:
+    Type: String
+    Default: mt-saas
+    Description: Project name prefix
+
+  BedrockModelId:
+    Type: String
+    Default: anthropic.claude-3-sonnet-20240229-v1:0
+    Description: Bedrock model ID for GenAI analysis
+
+  BedrockMaxTokens:
+    Type: Number
+    Default: 4096
+    Description: Maximum tokens for Bedrock responses
+
+  AlarmEmail:
+    Type: String
+    Default: ''
+    Description: Email for CloudWatch alarms
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
+  IsProd: !Equals [!Ref Environment, 'prod']
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 30
+    MemorySize: 256
+    Tracing: Active
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: INFO
+        POWERTOOLS_SERVICE_NAME: !Ref ProjectName
+    Tags:
+      Environment: !Ref Environment
+      Project: !Ref ProjectName
+
+Resources:
+  # ============================================================================
+  # KMS KEY FOR ENCRYPTION
+  # ============================================================================
+  EncryptionKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub 'KMS key for ${ProjectName}-${Environment} encryption'
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: Allow Services
+            Effect: Allow
+            Principal:
+              Service:
+                - dynamodb.amazonaws.com
+                - sqs.amazonaws.com
+                - sns.amazonaws.com
+                - lambda.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  EncryptionKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${ProjectName}-${Environment}'
+      TargetKeyId: !Ref EncryptionKey
+
+  # ============================================================================
+  # COGNITO USER POOL
+  # ============================================================================
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${ProjectName}-${Environment}-users'
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      MfaConfiguration: !If [IsProd, 'ON', 'OPTIONAL']
+      EnabledMfas:
+        - SOFTWARE_TOKEN_MFA
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+          TemporaryPasswordValidityDays: 7
+      Schema:
+        - Name: email
+          Required: true
+          Mutable: true
+          AttributeDataType: String
+        - Name: tenant_id
+          Mutable: true
+          AttributeDataType: String
+        - Name: company
+          Mutable: true
+          AttributeDataType: String
+        - Name: role
+          Mutable: true
+          AttributeDataType: String
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      UserPoolAddOns:
+        AdvancedSecurityMode: !If [IsProd, 'ENFORCED', 'AUDIT']
+      UserPoolTags:
+        Environment: !Ref Environment
+        Project: !Ref ProjectName
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub '${ProjectName}-${Environment}-client'
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+      PreventUserExistenceErrors: ENABLED
+      SupportedIdentityProviders:
+        - COGNITO
+      AllowedOAuthFlows:
+        - code
+        - implicit
+      AllowedOAuthScopes:
+        - email
+        - openid
+        - profile
+      AllowedOAuthFlowsUserPoolClient: true
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub '${ProjectName}-${Environment}-${AWS::AccountId}'
+      UserPoolId: !Ref UserPool
+
+  AdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: admins
+      Description: Administrator group with full access
+      UserPoolId: !Ref UserPool
+      Precedence: 1
+
+  UsersGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: users
+      Description: Standard users
+      UserPoolId: !Ref UserPool
+      Precedence: 10
+
+  # ============================================================================
+  # DYNAMODB TABLES
+  # ============================================================================
+  TenantsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-tenants'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: gsi1pk
+          AttributeType: S
+        - AttributeName: gsi1sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: gsi1
+          KeySchema:
+            - AttributeName: gsi1pk
+              KeyType: HASH
+            - AttributeName: gsi1sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref EncryptionKey
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  EmailsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-emails'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: connection_id
+          AttributeType: S
+        - AttributeName: received_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: connection-index
+          KeySchema:
+            - AttributeName: connection_id
+              KeyType: HASH
+            - AttributeName: received_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref EncryptionKey
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  CRMTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-crm'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: email_address
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: email-index
+          KeySchema:
+            - AttributeName: email_address
+              KeyType: HASH
+            - AttributeName: pk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref EncryptionKey
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  AuditTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-audit'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: event_type
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: event-type-index
+          KeySchema:
+            - AttributeName: event_type
+              KeyType: HASH
+            - AttributeName: timestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref EncryptionKey
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # SQS QUEUES
+  # ============================================================================
+  AsyncDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-${Environment}-async-dlq'
+      MessageRetentionPeriod: 1209600
+      KmsMasterKeyId: !Ref EncryptionKey
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  AsyncQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-${Environment}-async'
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 1209600
+      ReceiveMessageWaitTimeSeconds: 20
+      KmsMasterKeyId: !Ref EncryptionKey
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt AsyncDLQ.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  EmailDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-${Environment}-email-dlq'
+      MessageRetentionPeriod: 1209600
+      KmsMasterKeyId: !Ref EncryptionKey
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  EmailQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-${Environment}-email-processing'
+      VisibilityTimeout: 600
+      MessageRetentionPeriod: 1209600
+      ReceiveMessageWaitTimeSeconds: 20
+      KmsMasterKeyId: !Ref EncryptionKey
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt EmailDLQ.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # SNS TOPIC
+  # ============================================================================
+  EventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-events'
+      KmsMasterKeyId: !Ref EncryptionKey
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # LAMBDA FUNCTIONS
+  # ============================================================================
+
+  # Lambda Authorizer Function
+  AuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-authorizer'
+      Handler: authorizer.handler
+      CodeUri: ../src/handlers/
+      Timeout: 10
+      MemorySize: 256
+      Description: JWT token validation and tenant context extraction
+      Environment:
+        Variables:
+          COGNITO_USER_POOL_ID: !Ref UserPool
+          COGNITO_CLIENT_ID: !Ref UserPoolClient
+          TENANTS_TABLE: !Ref TenantsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref TenantsTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - cognito-idp:GetUser
+                - cognito-idp:AdminGetUser
+              Resource: !GetAtt UserPool.Arn
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+              Resource: !GetAtt EncryptionKey.Arn
+
+  AuthorizerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AuthorizerFunction}'
+      RetentionInDays: 30
+
+  # API Handler Function
+  ApiHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-api'
+      Handler: api_handler.handler
+      CodeUri: ../src/handlers/
+      Timeout: 30
+      MemorySize: 512
+      Description: Main API handler for multi-tenant platform
+      Environment:
+        Variables:
+          TENANTS_TABLE: !Ref TenantsTable
+          EMAILS_TABLE: !Ref EmailsTable
+          CRM_TABLE: !Ref CRMTable
+          AUDIT_TABLE: !Ref AuditTable
+          ASYNC_QUEUE_URL: !Ref AsyncQueue
+          EVENTS_TOPIC_ARN: !Ref EventsTopic
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TenantsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EmailsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CRMTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AuditTable
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt AsyncQueue.QueueName
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt EventsTopic.TopicName
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:GenerateDataKey
+              Resource: !GetAtt EncryptionKey.Arn
+
+  ApiHandlerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ApiHandlerFunction}'
+      RetentionInDays: 30
+
+  # Async Processor Function
+  AsyncProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-async-processor'
+      Handler: async_processor.handler
+      CodeUri: ../src/handlers/
+      Timeout: 300
+      MemorySize: 512
+      Description: Processes async tasks from SQS queue
+      Environment:
+        Variables:
+          TENANTS_TABLE: !Ref TenantsTable
+          EMAILS_TABLE: !Ref EmailsTable
+          EVENTS_TOPIC_ARN: !Ref EventsTopic
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt AsyncQueue.Arn
+            BatchSize: 10
+            MaximumBatchingWindowInSeconds: 5
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TenantsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EmailsTable
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt EventsTopic.TopicName
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:GenerateDataKey
+              Resource: !GetAtt EncryptionKey.Arn
+
+  AsyncProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AsyncProcessorFunction}'
+      RetentionInDays: 30
+
+  # Email Sync Function (Scheduled)
+  EmailSyncFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-email-sync'
+      Handler: email_sync.handler
+      CodeUri: ../src/handlers/
+      Timeout: 300
+      MemorySize: 512
+      Description: Sync emails from connected providers
+      Environment:
+        Variables:
+          TENANTS_TABLE: !Ref TenantsTable
+          EMAILS_TABLE: !Ref EmailsTable
+          ASYNC_QUEUE_URL: !Ref AsyncQueue
+      Events:
+        ScheduleEvent:
+          Type: Schedule
+          Properties:
+            Schedule: rate(15 minutes)
+            Description: Trigger email sync every 15 minutes
+            Enabled: true
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TenantsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EmailsTable
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt AsyncQueue.QueueName
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:GenerateDataKey
+              Resource: !GetAtt EncryptionKey.Arn
+
+  EmailSyncLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${EmailSyncFunction}'
+      RetentionInDays: 30
+
+  # GenAI Analysis Function
+  AnalysisFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-analysis'
+      Handler: analysis.handler
+      CodeUri: ../src/handlers/
+      Timeout: 120
+      MemorySize: 1024
+      Description: GenAI email analysis using Bedrock
+      Environment:
+        Variables:
+          EMAILS_TABLE: !Ref EmailsTable
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          BEDROCK_MAX_TOKENS: !Ref BedrockMaxTokens
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt EmailQueue.Arn
+            BatchSize: 5
+            MaximumBatchingWindowInSeconds: 10
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EmailsTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/*'
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:GenerateDataKey
+              Resource: !GetAtt EncryptionKey.Arn
+
+  AnalysisLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AnalysisFunction}'
+      RetentionInDays: 30
+
+  # Audit Handler Function
+  AuditHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-audit'
+      Handler: audit_handler.handler
+      CodeUri: ../src/handlers/
+      Timeout: 60
+      MemorySize: 256
+      Description: Records audit events from SNS
+      Environment:
+        Variables:
+          AUDIT_TABLE: !Ref AuditTable
+      Events:
+        SNSEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref EventsTopic
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AuditTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:GenerateDataKey
+              Resource: !GetAtt EncryptionKey.Arn
+
+  AuditHandlerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AuditHandlerFunction}'
+      RetentionInDays: 30
+
+  # ============================================================================
+  # API GATEWAY
+  # ============================================================================
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-api'
+      StageName: !Ref Environment
+      TracingEnabled: true
+      Auth:
+        DefaultAuthorizer: LambdaAuthorizer
+        Authorizers:
+          LambdaAuthorizer:
+            FunctionArn: !GetAtt AuthorizerFunction.Arn
+            Identity:
+              Header: Authorization
+              ReauthorizeEvery: 300
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key'"
+        AllowOrigin: "'*'"
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          MetricsEnabled: true
+          DataTraceEnabled: true
+          LoggingLevel: INFO
+      Tags:
+        Environment: !Ref Environment
+        Project: !Ref ProjectName
+
+  ApiHandlerApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiHandlerFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*/*'
+
+  # API Routes (using explicit Lambda proxy integration)
+  ApiHealthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-api-health'
+      Handler: api_handler.health_handler
+      CodeUri: ../src/handlers/
+      Timeout: 10
+      MemorySize: 128
+      Description: Health check endpoint
+      Events:
+        HealthApi:
+          Type: Api
+          Properties:
+            Path: /health
+            Method: GET
+            RestApiId: !Ref ApiGateway
+            Auth:
+              Authorizer: NONE
+
+  ApiTenantsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-api-tenants'
+      Handler: api_handler.tenants_handler
+      CodeUri: ../src/handlers/
+      Timeout: 30
+      MemorySize: 256
+      Description: Tenants API endpoint
+      Environment:
+        Variables:
+          TENANTS_TABLE: !Ref TenantsTable
+      Events:
+        TenantsMe:
+          Type: Api
+          Properties:
+            Path: /tenants/me
+            Method: GET
+            RestApiId: !Ref ApiGateway
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref TenantsTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+              Resource: !GetAtt EncryptionKey.Arn
+
+  ApiEmailsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-api-emails'
+      Handler: api_handler.emails_handler
+      CodeUri: ../src/handlers/
+      Timeout: 30
+      MemorySize: 256
+      Description: Emails API endpoint
+      Environment:
+        Variables:
+          EMAILS_TABLE: !Ref EmailsTable
+      Events:
+        EmailsList:
+          Type: Api
+          Properties:
+            Path: /emails
+            Method: GET
+            RestApiId: !Ref ApiGateway
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref EmailsTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+              Resource: !GetAtt EncryptionKey.Arn
+
+  ApiCRMFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-api-crm'
+      Handler: api_handler.crm_handler
+      CodeUri: ../src/handlers/
+      Timeout: 30
+      MemorySize: 256
+      Description: CRM API endpoint
+      Environment:
+        Variables:
+          CRM_TABLE: !Ref CRMTable
+      Events:
+        CRMContacts:
+          Type: Api
+          Properties:
+            Path: /crm/contacts
+            Method: GET
+            RestApiId: !Ref ApiGateway
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref CRMTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+              Resource: !GetAtt EncryptionKey.Arn
+
+  # ============================================================================
+  # CLOUDWATCH MONITORING
+  # ============================================================================
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasAlarmEmail
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-alarms'
+
+  AlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  AnalyticsDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${ProjectName}-${Environment}-dashboard'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Invocations",
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${ApiHandlerFunction}"],
+                  [".", ".", ".", "${AuthorizerFunction}"],
+                  [".", ".", ".", "${AnalysisFunction}"],
+                  [".", ".", ".", "${EmailSyncFunction}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Errors",
+                "metrics": [
+                  ["AWS/Lambda", "Errors", "FunctionName", "${ApiHandlerFunction}"],
+                  [".", ".", ".", "${AuthorizerFunction}"],
+                  [".", ".", ".", "${AnalysisFunction}"],
+                  [".", ".", ".", "${EmailSyncFunction}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "API Gateway Requests",
+                "metrics": [
+                  ["AWS/ApiGateway", "Count", "ApiName", "${ProjectName}-${Environment}-api"],
+                  [".", "5XXError", ".", "."],
+                  [".", "4XXError", ".", "."]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "SQS Queue Metrics",
+                "metrics": [
+                  ["AWS/SQS", "NumberOfMessagesReceived", "QueueName", "${AsyncQueue.QueueName}"],
+                  [".", "ApproximateNumberOfMessagesVisible", ".", "."],
+                  [".", "NumberOfMessagesReceived", ".", "${EmailQueue.QueueName}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+
+  UserPoolClientId:
+    Description: Cognito User Pool Client ID
+    Value: !Ref UserPoolClient
+
+  UserPoolDomain:
+    Description: Cognito User Pool Domain
+    Value: !Sub '${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com'
+
+  TenantsTableName:
+    Description: Tenants DynamoDB table name
+    Value: !Ref TenantsTable
+
+  EmailsTableName:
+    Description: Emails DynamoDB table name
+    Value: !Ref EmailsTable
+
+  CRMTableName:
+    Description: CRM DynamoDB table name
+    Value: !Ref CRMTable
+
+  AuditTableName:
+    Description: Audit DynamoDB table name
+    Value: !Ref AuditTable
+
+  AsyncQueueUrl:
+    Description: Async processing queue URL
+    Value: !Ref AsyncQueue
+
+  EmailQueueUrl:
+    Description: Email processing queue URL
+    Value: !Ref EmailQueue
+
+  EventsTopicArn:
+    Description: Events SNS topic ARN
+    Value: !Ref EventsTopic
+
+  EncryptionKeyArn:
+    Description: KMS encryption key ARN
+    Value: !GetAtt EncryptionKey.Arn
+
+  AuthorizerFunctionArn:
+    Description: Authorizer Lambda function ARN
+    Value: !GetAtt AuthorizerFunction.Arn
+
+  ApiHandlerFunctionArn:
+    Description: API handler Lambda function ARN
+    Value: !GetAtt ApiHandlerFunction.Arn
+
+  AnalysisFunctionArn:
+    Description: Analysis Lambda function ARN
+    Value: !GetAtt AnalysisFunction.Arn

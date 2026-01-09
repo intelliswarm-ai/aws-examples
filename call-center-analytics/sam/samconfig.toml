@@ -1,0 +1,50 @@
+version = 0.1
+
+[default]
+[default.global.parameters]
+stack_name = "call-sentiment-dev"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.validate.parameters]
+lint = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND"
+confirm_changeset = true
+resolve_s3 = true
+s3_prefix = "call-sentiment"
+region = "eu-central-1"
+parameter_overrides = "Environment=\"dev\" OpenSearchMasterPassword=\"ChangeMeNow123!\""
+
+[default.sync.parameters]
+watch = true
+
+# Development environment
+[dev]
+[dev.deploy.parameters]
+stack_name = "call-sentiment-dev"
+s3_prefix = "call-sentiment-dev"
+region = "eu-central-1"
+confirm_changeset = false
+parameter_overrides = "Environment=\"dev\" OpenSearchMasterPassword=\"ChangeMeNow123!\" OpenSearchInstanceCount=\"1\""
+
+# Staging environment
+[staging]
+[staging.deploy.parameters]
+stack_name = "call-sentiment-staging"
+s3_prefix = "call-sentiment-staging"
+region = "eu-central-1"
+confirm_changeset = true
+parameter_overrides = "Environment=\"staging\" OpenSearchMasterPassword=\"ChangeMeNow123!\" OpenSearchInstanceCount=\"2\""
+
+# Production environment
+[prod]
+[prod.deploy.parameters]
+stack_name = "call-sentiment-prod"
+s3_prefix = "call-sentiment-prod"
+region = "eu-central-1"
+confirm_changeset = true
+parameter_overrides = "Environment=\"prod\" OpenSearchMasterPassword=\"REPLACE_WITH_SECURE_PASSWORD\" OpenSearchInstanceCount=\"3\" OpenSearchInstanceType=\"m6g.large.search\""

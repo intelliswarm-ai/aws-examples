@@ -1,0 +1,575 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Airline Chatbot - Conversational AI with Amazon Lex for flight bookings, updates, and check-ins'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+  NamePrefix:
+    Type: String
+    Default: airline
+    Description: Resource name prefix
+
+  BotLocale:
+    Type: String
+    Default: en_US
+    AllowedValues:
+      - en_US
+      - en_GB
+      - en_AU
+      - es_ES
+      - fr_FR
+      - de_DE
+      - it_IT
+    Description: Lex bot locale
+
+  IdleSessionTTL:
+    Type: Number
+    Default: 300
+    MinValue: 60
+    MaxValue: 86400
+    Description: Session idle timeout in seconds
+
+  AlarmEmail:
+    Type: String
+    Default: ''
+    Description: Email for CloudWatch alarms
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
+  IsProd: !Equals [!Ref Environment, 'prod']
+  IsNotProd: !Not [!Equals [!Ref Environment, 'prod']]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 30
+    MemorySize: 256
+    Tracing: Active
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: !If [IsProd, 'INFO', 'DEBUG']
+        POWERTOOLS_SERVICE_NAME: airline-chatbot
+        POWERTOOLS_METRICS_NAMESPACE: AirlineChatbot
+    Tags:
+      Environment: !Ref Environment
+      Project: !Sub '${NamePrefix}-chatbot'
+
+Resources:
+  # ============================================================================
+  # DYNAMODB TABLES
+  # ============================================================================
+  BookingsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${NamePrefix}-${Environment}-bookings'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: booking_reference
+          AttributeType: S
+        - AttributeName: customer_email
+          AttributeType: S
+        - AttributeName: departure_date
+          AttributeType: S
+      KeySchema:
+        - AttributeName: booking_reference
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: customer-email-index
+          KeySchema:
+            - AttributeName: customer_email
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: departure-date-index
+          KeySchema:
+            - AttributeName: departure_date
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Sub '${NamePrefix}-chatbot'
+
+  FlightsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${NamePrefix}-${Environment}-flights'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: flight_id
+          AttributeType: S
+        - AttributeName: route
+          AttributeType: S
+        - AttributeName: departure_time
+          AttributeType: S
+      KeySchema:
+        - AttributeName: flight_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: route-departure-index
+          KeySchema:
+            - AttributeName: route
+              KeyType: HASH
+            - AttributeName: departure_time
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Sub '${NamePrefix}-chatbot'
+
+  CheckInsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${NamePrefix}-${Environment}-checkins'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: checkin_id
+          AttributeType: S
+        - AttributeName: booking_reference
+          AttributeType: S
+      KeySchema:
+        - AttributeName: checkin_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: booking-reference-index
+          KeySchema:
+            - AttributeName: booking_reference
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Sub '${NamePrefix}-chatbot'
+
+  # ============================================================================
+  # LAMBDA FUNCTIONS
+  # ============================================================================
+
+  # Lex Fulfillment Lambda
+  FulfillmentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${NamePrefix}-${Environment}-fulfillment'
+      Handler: fulfillment_handler.handler
+      CodeUri: ../src/handlers/
+      Description: Lex fulfillment handler for airline chatbot
+      Environment:
+        Variables:
+          BOOKINGS_TABLE: !Ref BookingsTable
+          FLIGHTS_TABLE: !Ref FlightsTable
+          CHECKINS_TABLE: !Ref CheckInsTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref BookingsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FlightsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CheckInsTable
+
+  FulfillmentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${FulfillmentFunction}'
+      RetentionInDays: !If [IsProd, 90, 30]
+
+  # Lambda Permission for Lex
+  LexInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref FulfillmentFunction
+      Action: lambda:InvokeFunction
+      Principal: lexv2.amazonaws.com
+      SourceArn: !Sub 'arn:aws:lex:${AWS::Region}:${AWS::AccountId}:bot-alias/*'
+
+  # Lambda Function URL for direct access
+  FulfillmentFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      AuthType: !If [IsProd, 'AWS_IAM', 'NONE']
+      TargetFunctionArn: !Ref FulfillmentFunction
+      Cors:
+        AllowCredentials: true
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - POST
+        AllowHeaders:
+          - content-type
+          - x-amz-date
+          - authorization
+          - x-api-key
+        MaxAge: 86400
+
+  FulfillmentFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Condition: IsNotProd
+    Properties:
+      FunctionName: !Ref FulfillmentFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  # ============================================================================
+  # LEX BOT
+  # ============================================================================
+  LexServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${NamePrefix}-${Environment}-lex-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lexv2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LexPollyAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - polly:SynthesizeSpeech
+                Resource: '*'
+
+  LexConversationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lex/${NamePrefix}-${Environment}-bot'
+      RetentionInDays: !If [IsProd, 90, 30]
+
+  AirlineBot:
+    Type: AWS::Lex::Bot
+    Properties:
+      Name: !Sub '${NamePrefix}-${Environment}-bot'
+      Description: Airline Assistant Chatbot for flight bookings, updates, and check-ins
+      RoleArn: !GetAtt LexServiceRole.Arn
+      DataPrivacy:
+        ChildDirected: false
+      IdleSessionTTLInSeconds: !Ref IdleSessionTTL
+      AutoBuildBotLocales: true
+      BotLocales:
+        - LocaleId: !Ref BotLocale
+          NluConfidenceThreshold: 0.7
+          VoiceSettings:
+            VoiceId: Joanna
+            Engine: neural
+          SlotTypes:
+            - Name: CabinClass
+              Description: Cabin class options
+              ValueSelectionSetting:
+                ResolutionStrategy: OriginalValue
+              SlotTypeValues:
+                - SampleValue:
+                    Value: economy
+                  Synonyms:
+                    - Value: coach
+                    - Value: standard
+                - SampleValue:
+                    Value: business
+                  Synonyms:
+                    - Value: business class
+                - SampleValue:
+                    Value: first
+                  Synonyms:
+                    - Value: first class
+            - Name: SeatPreference
+              Description: Seat preference options
+              ValueSelectionSetting:
+                ResolutionStrategy: OriginalValue
+              SlotTypeValues:
+                - SampleValue:
+                    Value: window
+                - SampleValue:
+                    Value: middle
+                  Synonyms:
+                    - Value: center
+                - SampleValue:
+                    Value: aisle
+          Intents:
+            - Name: BookFlight
+              Description: Intent to book a flight
+              SampleUtterances:
+                - Utterance: I want to book a flight
+                - Utterance: Book a flight
+                - Utterance: Book me a flight from {Origin} to {Destination}
+                - Utterance: Find flights from {Origin} to {Destination}
+              SlotPriorities:
+                - Priority: 1
+                  SlotName: Origin
+                - Priority: 2
+                  SlotName: Destination
+                - Priority: 3
+                  SlotName: DepartureDate
+                - Priority: 4
+                  SlotName: Passengers
+              Slots:
+                - Name: Origin
+                  SlotTypeName: AMAZON.City
+                  ValueElicitationSetting:
+                    SlotConstraint: Required
+                    PromptSpecification:
+                      MessageGroupsList:
+                        - Message:
+                            PlainTextMessage:
+                              Value: Where would you like to fly from?
+                      MaxRetries: 3
+                - Name: Destination
+                  SlotTypeName: AMAZON.City
+                  ValueElicitationSetting:
+                    SlotConstraint: Required
+                    PromptSpecification:
+                      MessageGroupsList:
+                        - Message:
+                            PlainTextMessage:
+                              Value: Where would you like to fly to?
+                      MaxRetries: 3
+                - Name: DepartureDate
+                  SlotTypeName: AMAZON.Date
+                  ValueElicitationSetting:
+                    SlotConstraint: Required
+                    PromptSpecification:
+                      MessageGroupsList:
+                        - Message:
+                            PlainTextMessage:
+                              Value: When do you want to depart?
+                      MaxRetries: 3
+                - Name: Passengers
+                  SlotTypeName: AMAZON.Number
+                  ValueElicitationSetting:
+                    SlotConstraint: Required
+                    PromptSpecification:
+                      MessageGroupsList:
+                        - Message:
+                            PlainTextMessage:
+                              Value: How many passengers?
+                      MaxRetries: 3
+              FulfillmentCodeHook:
+                Enabled: true
+              DialogCodeHook:
+                Enabled: true
+            - Name: CheckIn
+              Description: Intent to check in for a flight
+              SampleUtterances:
+                - Utterance: I want to check in
+                - Utterance: Check in for my flight
+                - Utterance: Online check in
+              SlotPriorities:
+                - Priority: 1
+                  SlotName: BookingReference
+              Slots:
+                - Name: BookingReference
+                  SlotTypeName: AMAZON.AlphaNumeric
+                  ValueElicitationSetting:
+                    SlotConstraint: Required
+                    PromptSpecification:
+                      MessageGroupsList:
+                        - Message:
+                            PlainTextMessage:
+                              Value: What's your booking reference?
+                      MaxRetries: 3
+              FulfillmentCodeHook:
+                Enabled: true
+              DialogCodeHook:
+                Enabled: true
+            - Name: FallbackIntent
+              Description: Fallback intent
+              ParentIntentSignature: AMAZON.FallbackIntent
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Sub '${NamePrefix}-chatbot'
+
+  BotVersion:
+    Type: AWS::Lex::BotVersion
+    Properties:
+      BotId: !Ref AirlineBot
+      BotVersionLocaleSpecification:
+        - LocaleId: !Ref BotLocale
+          BotVersionLocaleDetails:
+            SourceBotVersion: DRAFT
+
+  BotAlias:
+    Type: AWS::Lex::BotAlias
+    Properties:
+      BotId: !Ref AirlineBot
+      BotAliasName: !Sub '${Environment}-alias'
+      Description: !Sub 'Live alias for ${Environment} environment'
+      BotVersion: !GetAtt BotVersion.BotVersion
+      BotAliasLocaleSettings:
+        - LocaleId: !Ref BotLocale
+          BotAliasLocaleSetting:
+            Enabled: true
+            CodeHookSpecification:
+              LambdaCodeHook:
+                LambdaArn: !GetAtt FulfillmentFunction.Arn
+                CodeHookInterfaceVersion: '1.0'
+      ConversationLogSettings:
+        TextLogSettings:
+          - Enabled: true
+            Destination:
+              CloudWatch:
+                CloudWatchLogGroupArn: !GetAtt LexConversationLogGroup.Arn
+                LogPrefix: lex-conversations
+
+  # ============================================================================
+  # CLOUDWATCH MONITORING
+  # ============================================================================
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasAlarmEmail
+    Properties:
+      TopicName: !Sub '${NamePrefix}-${Environment}-alarms'
+
+  AlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  FulfillmentErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${NamePrefix}-${Environment}-fulfillment-errors'
+      AlarmDescription: Fulfillment Lambda errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref FulfillmentFunction
+      AlarmActions:
+        - !If [HasAlarmEmail, !Ref AlarmTopic, !Ref 'AWS::NoValue']
+
+  ChatbotDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${NamePrefix}-${Environment}-dashboard'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Invocations",
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${FulfillmentFunction}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Duration",
+                "metrics": [
+                  ["AWS/Lambda", "Duration", "FunctionName", "${FulfillmentFunction}"]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Errors",
+                "metrics": [
+                  ["AWS/Lambda", "Errors", "FunctionName", "${FulfillmentFunction}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  LexBotId:
+    Description: Lex bot ID
+    Value: !Ref AirlineBot
+
+  LexBotAliasId:
+    Description: Lex bot alias ID
+    Value: !GetAtt BotAlias.BotAliasId
+
+  LexBotLocale:
+    Description: Lex bot locale
+    Value: !Ref BotLocale
+
+  FulfillmentFunctionArn:
+    Description: Fulfillment Lambda function ARN
+    Value: !GetAtt FulfillmentFunction.Arn
+
+  FulfillmentFunctionUrl:
+    Description: Lambda Function URL - direct HTTPS endpoint
+    Value: !GetAtt FulfillmentFunctionUrl.FunctionUrl
+
+  BookingsTableName:
+    Description: DynamoDB bookings table name
+    Value: !Ref BookingsTable
+
+  FlightsTableName:
+    Description: DynamoDB flights table name
+    Value: !Ref FlightsTable
+
+  CheckInsTableName:
+    Description: DynamoDB check-ins table name
+    Value: !Ref CheckInsTable
+
+  TestCommand:
+    Description: AWS CLI command to test the bot
+    Value: !Sub |
+      aws lexv2-runtime recognize-text \
+        --bot-id ${AirlineBot} \
+        --bot-alias-id ${BotAlias.BotAliasId} \
+        --locale-id ${BotLocale} \
+        --session-id test-session \
+        --text "I want to book a flight"

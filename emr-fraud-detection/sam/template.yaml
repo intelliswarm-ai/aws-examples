@@ -1,0 +1,1003 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'EMR Fraud Detection Pipeline - Real-time and batch fraud detection using Spark and ML'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+  ProjectName:
+    Type: String
+    Default: fraud-detect
+    Description: Project name prefix
+
+  KinesisShardCount:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 10
+    Description: Number of Kinesis shards
+
+  EMRReleaseLabel:
+    Type: String
+    Default: emr-7.0.0
+    Description: EMR release version
+
+  EMRMasterInstanceType:
+    Type: String
+    Default: m5.xlarge
+    Description: EMR master instance type
+
+  EMRCoreInstanceType:
+    Type: String
+    Default: m5.xlarge
+    Description: EMR core instance type
+
+  EMRCoreInstanceCount:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 10
+    Description: Number of EMR core instances
+
+  ModelVersion:
+    Type: String
+    Default: v1.0.0
+    Description: ML model version
+
+  FraudThreshold:
+    Type: Number
+    Default: 0.85
+    Description: Fraud detection threshold
+
+  SuspiciousThreshold:
+    Type: Number
+    Default: 0.65
+    Description: Suspicious activity threshold
+
+  AlarmEmail:
+    Type: String
+    Default: ''
+    Description: Email for CloudWatch alarms
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
+  IsProd: !Equals [!Ref Environment, 'prod']
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 60
+    MemorySize: 256
+    Tracing: Active
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: INFO
+        POWERTOOLS_SERVICE_NAME: !Ref ProjectName
+    Tags:
+      Environment: !Ref Environment
+      Project: !Ref ProjectName
+
+Resources:
+  # ============================================================================
+  # VPC CONFIGURATION
+  # ============================================================================
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpc'
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-public-1'
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-public-2'
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.10.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-private-1'
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.11.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-private-2'
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-igw'
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  NatEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-nat'
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-public-rt'
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-private-rt'
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-${Environment}-lambda-sg'
+      GroupDescription: Security group for Lambda functions
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-lambda-sg'
+
+  # ============================================================================
+  # S3 BUCKETS
+  # ============================================================================
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-data-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ModelsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-models-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  LogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-logs-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireLogs
+            Status: Enabled
+            ExpirationInDays: 90
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # KINESIS STREAM
+  # ============================================================================
+  TransactionsStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-transactions'
+      ShardCount: !Ref KinesisShardCount
+      RetentionPeriodHours: 24
+      StreamEncryption:
+        EncryptionType: KMS
+        KeyId: alias/aws/kinesis
+      StreamModeDetails:
+        StreamMode: PROVISIONED
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # DYNAMODB TABLES
+  # ============================================================================
+  AlertsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-alerts'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: alert_id
+          AttributeType: S
+        - AttributeName: account_id
+          AttributeType: S
+        - AttributeName: created_at
+          AttributeType: S
+        - AttributeName: severity
+          AttributeType: S
+      KeySchema:
+        - AttributeName: alert_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: account-index
+          KeySchema:
+            - AttributeName: account_id
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: severity-index
+          KeySchema:
+            - AttributeName: severity
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  PredictionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-predictions'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: prediction_id
+          AttributeType: S
+        - AttributeName: transaction_id
+          AttributeType: S
+        - AttributeName: account_id
+          AttributeType: S
+        - AttributeName: processed_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: prediction_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: transaction-index
+          KeySchema:
+            - AttributeName: transaction_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: account-index
+          KeySchema:
+            - AttributeName: account_id
+              KeyType: HASH
+            - AttributeName: processed_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ExecutionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-executions'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: execution_id
+          AttributeType: S
+        - AttributeName: pipeline_name
+          AttributeType: S
+        - AttributeName: started_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: execution_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: pipeline-index
+          KeySchema:
+            - AttributeName: pipeline_name
+              KeyType: HASH
+            - AttributeName: started_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # SNS TOPICS
+  # ============================================================================
+  FraudAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-fraud-alerts'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  PipelineNotificationsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-pipeline-notifications'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # LAMBDA FUNCTIONS
+  # ============================================================================
+
+  # Ingestion Function
+  IngestionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-ingestion'
+      Handler: ingestion_handler.handler
+      CodeUri: ../src/handlers/
+      Timeout: 30
+      MemorySize: 256
+      Description: Ingests transactions into Kinesis stream
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          KINESIS_STREAM_NAME: !Ref TransactionsStream
+      Events:
+        ApiEvent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /transactions
+            Method: POST
+      Policies:
+        - KinesisCrudPolicy:
+            StreamName: !Ref TransactionsStream
+
+  IngestionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${IngestionFunction}'
+      RetentionInDays: 30
+
+  # Stream Processor Function
+  StreamProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-stream-processor'
+      Handler: stream_processor.handler
+      CodeUri: ../src/handlers/
+      Timeout: 60
+      MemorySize: 512
+      Description: Processes transactions from Kinesis stream in real-time
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          DATA_BUCKET: !Ref DataBucket
+          PREDICTIONS_TABLE: !Ref PredictionsTable
+          ALERTS_TABLE: !Ref AlertsTable
+          FRAUD_ALERTS_TOPIC: !Ref FraudAlertsTopic
+          FRAUD_THRESHOLD: !Ref FraudThreshold
+          SUSPICIOUS_THRESHOLD: !Ref SuspiciousThreshold
+      Events:
+        KinesisEvent:
+          Type: Kinesis
+          Properties:
+            Stream: !GetAtt TransactionsStream.Arn
+            StartingPosition: LATEST
+            BatchSize: 100
+            MaximumBatchingWindowInSeconds: 5
+            ParallelizationFactor: 2
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref DataBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PredictionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AlertsTable
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt FraudAlertsTopic.TopicName
+
+  StreamProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${StreamProcessorFunction}'
+      RetentionInDays: 30
+
+  # Orchestration Function
+  OrchestrationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-orchestration'
+      Handler: orchestration_handler.handler
+      CodeUri: ../src/handlers/
+      Timeout: 60
+      MemorySize: 256
+      Description: Orchestrates EMR pipeline steps
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          DATA_BUCKET: !Ref DataBucket
+          MODELS_BUCKET: !Ref ModelsBucket
+          EXECUTIONS_TABLE: !Ref ExecutionsTable
+          MODEL_VERSION: !Ref ModelVersion
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref DataBucket
+        - S3ReadPolicy:
+            BucketName: !Ref ModelsBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ExecutionsTable
+
+  OrchestrationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${OrchestrationFunction}'
+      RetentionInDays: 30
+
+  # Alert Function
+  AlertFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-alert'
+      Handler: alert_handler.handler
+      CodeUri: ../src/handlers/
+      Timeout: 30
+      MemorySize: 256
+      Description: Processes and sends fraud alerts
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          ALERTS_TABLE: !Ref AlertsTable
+          FRAUD_ALERTS_TOPIC: !Ref FraudAlertsTopic
+          FRAUD_THRESHOLD: !Ref FraudThreshold
+          SUSPICIOUS_THRESHOLD: !Ref SuspiciousThreshold
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AlertsTable
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt FraudAlertsTopic.TopicName
+
+  AlertLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AlertFunction}'
+      RetentionInDays: 30
+
+  # Query Function
+  QueryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-query'
+      Handler: query_handler.handler
+      CodeUri: ../src/handlers/
+      Timeout: 30
+      MemorySize: 256
+      Description: Queries alerts and predictions
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          ALERTS_TABLE: !Ref AlertsTable
+          PREDICTIONS_TABLE: !Ref PredictionsTable
+          EXECUTIONS_TABLE: !Ref ExecutionsTable
+      Events:
+        GetAlerts:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /alerts
+            Method: GET
+        GetPredictions:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /predictions
+            Method: GET
+        GetExecutions:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /executions
+            Method: GET
+        GetHealth:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /health
+            Method: GET
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref AlertsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref PredictionsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref ExecutionsTable
+
+  QueryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${QueryFunction}'
+      RetentionInDays: 30
+
+  # ============================================================================
+  # API GATEWAY
+  # ============================================================================
+  ApiGateway:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref Environment
+      CorsConfiguration:
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+        AllowOrigins:
+          - '*'
+      Tags:
+        Environment: !Ref Environment
+        Project: !Ref ProjectName
+
+  # ============================================================================
+  # EMR IAM ROLES
+  # ============================================================================
+  EMRServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-emr-service-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: elasticmapreduce.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceRole
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  EMREC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-emr-ec2-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceforEC2Role
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt DataBucket.Arn
+                  - !Sub '${DataBucket.Arn}/*'
+                  - !GetAtt ModelsBucket.Arn
+                  - !Sub '${ModelsBucket.Arn}/*'
+                  - !GetAtt LogsBucket.Arn
+                  - !Sub '${LogsBucket.Arn}/*'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  EMREC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${ProjectName}-${Environment}-emr-ec2-profile'
+      Roles:
+        - !Ref EMREC2Role
+
+  # ============================================================================
+  # STEP FUNCTIONS
+  # ============================================================================
+  FraudDetectionPipeline:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-pipeline'
+      DefinitionUri: ../state-machine/pipeline.asl.json
+      DefinitionSubstitutions:
+        OrchestrationLambdaArn: !GetAtt OrchestrationFunction.Arn
+        DataBucket: !Ref DataBucket
+        ModelsBucket: !Ref ModelsBucket
+        LogsBucket: !Ref LogsBucket
+        EMRServiceRoleArn: !GetAtt EMRServiceRole.Arn
+        EMREC2InstanceProfileArn: !GetAtt EMREC2InstanceProfile.Arn
+        EMRSubnetId: !Ref PrivateSubnet1
+        PipelineNotificationsTopicArn: !Ref PipelineNotificationsTopic
+        ReleaseLabel: !Ref EMRReleaseLabel
+        MasterInstanceType: !Ref EMRMasterInstanceType
+        CoreInstanceType: !Ref EMRCoreInstanceType
+        CoreInstanceCount: !Ref EMRCoreInstanceCount
+        ModelVersion: !Ref ModelVersion
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+      Logging:
+        Level: ALL
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt PipelineLogGroup.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref OrchestrationFunction
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt PipelineNotificationsTopic.TopicName
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - elasticmapreduce:CreateCluster
+                - elasticmapreduce:DescribeCluster
+                - elasticmapreduce:TerminateCluster
+                - elasticmapreduce:AddJobFlowSteps
+                - elasticmapreduce:DescribeStep
+                - elasticmapreduce:SetTerminationProtection
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - iam:PassRole
+              Resource:
+                - !GetAtt EMRServiceRole.Arn
+                - !GetAtt EMREC2Role.Arn
+            - Effect: Allow
+              Action:
+                - logs:CreateLogDelivery
+                - logs:GetLogDelivery
+                - logs:UpdateLogDelivery
+                - logs:DeleteLogDelivery
+                - logs:ListLogDeliveries
+                - logs:PutResourcePolicy
+                - logs:DescribeResourcePolicies
+                - logs:DescribeLogGroups
+              Resource: '*'
+      Tags:
+        Environment: !Ref Environment
+        Project: !Ref ProjectName
+
+  PipelineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/stepfunctions/${ProjectName}-${Environment}-pipeline'
+      RetentionInDays: 30
+
+  # ============================================================================
+  # CLOUDWATCH MONITORING
+  # ============================================================================
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasAlarmEmail
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-alarms'
+
+  AlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  AnalyticsDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${ProjectName}-${Environment}-dashboard'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Kinesis Stream Metrics",
+                "metrics": [
+                  ["AWS/Kinesis", "IncomingRecords", "StreamName", "${TransactionsStream}"],
+                  [".", "IncomingBytes", ".", "."],
+                  [".", "GetRecords.IteratorAgeMilliseconds", ".", "."]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Invocations",
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${StreamProcessorFunction}"],
+                  [".", ".", ".", "${IngestionFunction}"],
+                  [".", ".", ".", "${AlertFunction}"],
+                  [".", ".", ".", "${QueryFunction}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Step Functions Executions",
+                "metrics": [
+                  ["AWS/States", "ExecutionsStarted", "StateMachineArn", "${FraudDetectionPipeline}"],
+                  [".", "ExecutionsSucceeded", ".", "."],
+                  [".", "ExecutionsFailed", ".", "."]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Errors",
+                "metrics": [
+                  ["AWS/Lambda", "Errors", "FunctionName", "${StreamProcessorFunction}"],
+                  [".", ".", ".", "${IngestionFunction}"],
+                  [".", ".", ".", "${AlertFunction}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+
+  TransactionsStreamName:
+    Description: Kinesis stream name
+    Value: !Ref TransactionsStream
+
+  TransactionsStreamArn:
+    Description: Kinesis stream ARN
+    Value: !GetAtt TransactionsStream.Arn
+
+  DataBucket:
+    Description: Data S3 bucket
+    Value: !Ref DataBucket
+
+  ModelsBucket:
+    Description: Models S3 bucket
+    Value: !Ref ModelsBucket
+
+  AlertsTableName:
+    Description: Alerts DynamoDB table name
+    Value: !Ref AlertsTable
+
+  PredictionsTableName:
+    Description: Predictions DynamoDB table name
+    Value: !Ref PredictionsTable
+
+  ExecutionsTableName:
+    Description: Executions DynamoDB table name
+    Value: !Ref ExecutionsTable
+
+  FraudAlertsTopicArn:
+    Description: Fraud alerts SNS topic ARN
+    Value: !Ref FraudAlertsTopic
+
+  PipelineArn:
+    Description: Step Functions pipeline ARN
+    Value: !Ref FraudDetectionPipeline
+
+  VpcId:
+    Description: VPC ID
+    Value: !Ref VPC

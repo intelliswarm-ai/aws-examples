@@ -1,0 +1,638 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Task Automation System - Java 21 serverless API with SnapStart'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+  ProjectName:
+    Type: String
+    Default: task-api
+    Description: Project name prefix
+
+  MemorySize:
+    Type: Number
+    Default: 512
+    MinValue: 128
+    MaxValue: 3008
+    Description: Lambda memory size in MB
+
+  Timeout:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    MaxValue: 900
+    Description: Lambda timeout in seconds
+
+  EnableSnapStart:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable Lambda SnapStart for faster cold starts
+
+  AlarmEmail:
+    Type: String
+    Default: ''
+    Description: Email for CloudWatch alarms
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
+  IsProd: !Equals [!Ref Environment, 'prod']
+  UseSnapStart: !Equals [!Ref EnableSnapStart, 'true']
+
+Globals:
+  Function:
+    Runtime: java21
+    Timeout: !Ref Timeout
+    MemorySize: !Ref MemorySize
+    Architectures:
+      - x86_64
+    Tracing: Active
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: INFO
+        POWERTOOLS_SERVICE_NAME: !Ref ProjectName
+        JAVA_TOOL_OPTIONS: '-XX:+TieredCompilation -XX:TieredStopAtLevel=1'
+    Tags:
+      Environment: !Ref Environment
+      Project: !Ref ProjectName
+
+Resources:
+  # ============================================================================
+  # DYNAMODB TABLES
+  # ============================================================================
+  TasksTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-tasks'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: task_id
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: created_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: task_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: status-created-index
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # SQS QUEUES
+  # ============================================================================
+  TaskDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-${Environment}-task-dlq'
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  TaskQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-${Environment}-task-queue'
+      VisibilityTimeout: 180
+      MessageRetentionPeriod: 1209600
+      ReceiveMessageWaitTimeSeconds: 20
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt TaskDLQ.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # SNS TOPICS
+  # ============================================================================
+  NotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-notifications'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # LAMBDA FUNCTIONS (Java 21 with SnapStart)
+  # ============================================================================
+
+  # Task Generator Function
+  TaskGeneratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-task-generator'
+      Handler: ai.intelliswarm.lambda.generator.handler.TaskGeneratorHandler::handleRequest
+      CodeUri: ../lambda/task-generator
+      Description: Generates tasks and queues them for processing
+      SnapStart:
+        ApplyOn: !If [UseSnapStart, PublishedVersions, None]
+      AutoPublishAlias: !If [UseSnapStart, live, !Ref 'AWS::NoValue']
+      Environment:
+        Variables:
+          TASKS_TABLE: !Ref TasksTable
+          TASK_QUEUE_URL: !Ref TaskQueue
+      Events:
+        ApiEvent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /tasks
+            Method: POST
+        ScheduleEvent:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Description: Generate periodic tasks
+            Enabled: !If [IsProd, true, false]
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TasksTable
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt TaskQueue.QueueName
+    Metadata:
+      BuildMethod: makefile
+
+  TaskGeneratorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${TaskGeneratorFunction}'
+      RetentionInDays: 30
+
+  # Task Worker Function (SQS processor)
+  TaskWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-task-worker'
+      Handler: ai.intelliswarm.lambda.worker.handler.TaskWorkerHandler::handleRequest
+      CodeUri: ../lambda/task-worker
+      Timeout: 60
+      Description: Processes tasks from SQS queue
+      SnapStart:
+        ApplyOn: !If [UseSnapStart, PublishedVersions, None]
+      AutoPublishAlias: !If [UseSnapStart, live, !Ref 'AWS::NoValue']
+      Environment:
+        Variables:
+          TASKS_TABLE: !Ref TasksTable
+          NOTIFICATION_TOPIC: !Ref NotificationTopic
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt TaskQueue.Arn
+            BatchSize: 10
+            MaximumBatchingWindowInSeconds: 5
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TasksTable
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt NotificationTopic.TopicName
+    Metadata:
+      BuildMethod: makefile
+
+  TaskWorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${TaskWorkerFunction}'
+      RetentionInDays: 30
+
+  # Validate Task Function (Step Functions)
+  ValidateTaskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-validate-task'
+      Handler: ai.intelliswarm.lambda.workflow.handler.ValidateTaskHandler::handleRequest
+      CodeUri: ../lambda/workflow-lambdas
+      Description: Validates task input for workflow
+      SnapStart:
+        ApplyOn: !If [UseSnapStart, PublishedVersions, None]
+      AutoPublishAlias: !If [UseSnapStart, live, !Ref 'AWS::NoValue']
+      Environment:
+        Variables:
+          TASKS_TABLE: !Ref TasksTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref TasksTable
+    Metadata:
+      BuildMethod: makefile
+
+  ValidateTaskLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ValidateTaskFunction}'
+      RetentionInDays: 30
+
+  # Process Task Function (Step Functions)
+  ProcessTaskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-process-task'
+      Handler: ai.intelliswarm.lambda.workflow.handler.ProcessTaskHandler::handleRequest
+      CodeUri: ../lambda/workflow-lambdas
+      Timeout: 120
+      Description: Processes task in workflow
+      SnapStart:
+        ApplyOn: !If [UseSnapStart, PublishedVersions, None]
+      AutoPublishAlias: !If [UseSnapStart, live, !Ref 'AWS::NoValue']
+      Environment:
+        Variables:
+          TASKS_TABLE: !Ref TasksTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TasksTable
+    Metadata:
+      BuildMethod: makefile
+
+  ProcessTaskLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProcessTaskFunction}'
+      RetentionInDays: 30
+
+  # Finalize Task Function (Step Functions)
+  FinalizeTaskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-finalize-task'
+      Handler: ai.intelliswarm.lambda.workflow.handler.FinalizeTaskHandler::handleRequest
+      CodeUri: ../lambda/workflow-lambdas
+      Description: Finalizes task and sends notifications
+      SnapStart:
+        ApplyOn: !If [UseSnapStart, PublishedVersions, None]
+      AutoPublishAlias: !If [UseSnapStart, live, !Ref 'AWS::NoValue']
+      Environment:
+        Variables:
+          TASKS_TABLE: !Ref TasksTable
+          NOTIFICATION_TOPIC: !Ref NotificationTopic
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TasksTable
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt NotificationTopic.TopicName
+    Metadata:
+      BuildMethod: makefile
+
+  FinalizeTaskLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${FinalizeTaskFunction}'
+      RetentionInDays: 30
+
+  # Notification Handler Function
+  NotificationHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-notification'
+      Handler: ai.intelliswarm.lambda.notification.handler.NotificationHandler::handleRequest
+      CodeUri: ../lambda/notification
+      Description: Handles notification delivery
+      SnapStart:
+        ApplyOn: !If [UseSnapStart, PublishedVersions, None]
+      AutoPublishAlias: !If [UseSnapStart, live, !Ref 'AWS::NoValue']
+      Environment:
+        Variables:
+          NOTIFICATION_TOPIC: !Ref NotificationTopic
+      Events:
+        SNSEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref NotificationTopic
+      Policies:
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt NotificationTopic.TopicName
+    Metadata:
+      BuildMethod: makefile
+
+  NotificationHandlerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${NotificationHandlerFunction}'
+      RetentionInDays: 30
+
+  # Query Tasks Function (API)
+  QueryTasksFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-query-tasks'
+      Handler: ai.intelliswarm.lambda.generator.handler.TaskGeneratorHandler::handleQueryRequest
+      CodeUri: ../lambda/task-generator
+      Description: Queries tasks by status
+      SnapStart:
+        ApplyOn: !If [UseSnapStart, PublishedVersions, None]
+      AutoPublishAlias: !If [UseSnapStart, live, !Ref 'AWS::NoValue']
+      Environment:
+        Variables:
+          TASKS_TABLE: !Ref TasksTable
+      Events:
+        GetTasks:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /tasks
+            Method: GET
+        GetTaskById:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /tasks/{task_id}
+            Method: GET
+        GetHealth:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiGateway
+            Path: /health
+            Method: GET
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref TasksTable
+    Metadata:
+      BuildMethod: makefile
+
+  QueryTasksLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${QueryTasksFunction}'
+      RetentionInDays: 30
+
+  # ============================================================================
+  # API GATEWAY
+  # ============================================================================
+  ApiGateway:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref Environment
+      CorsConfiguration:
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+        AllowOrigins:
+          - '*'
+      Tags:
+        Environment: !Ref Environment
+        Project: !Ref ProjectName
+
+  # ============================================================================
+  # STEP FUNCTIONS
+  # ============================================================================
+  TaskProcessingWorkflow:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-task-workflow'
+      DefinitionUri: ../state-machine/task-workflow.asl.json
+      DefinitionSubstitutions:
+        ValidateTaskArn: !GetAtt ValidateTaskFunction.Arn
+        ProcessTaskArn: !GetAtt ProcessTaskFunction.Arn
+        FinalizeTaskArn: !GetAtt FinalizeTaskFunction.Arn
+        NotificationTopicArn: !Ref NotificationTopic
+      Logging:
+        Level: ALL
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt WorkflowLogGroup.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ValidateTaskFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ProcessTaskFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref FinalizeTaskFunction
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt NotificationTopic.TopicName
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogDelivery
+                - logs:GetLogDelivery
+                - logs:UpdateLogDelivery
+                - logs:DeleteLogDelivery
+                - logs:ListLogDeliveries
+                - logs:PutResourcePolicy
+                - logs:DescribeResourcePolicies
+                - logs:DescribeLogGroups
+              Resource: '*'
+      Tags:
+        Environment: !Ref Environment
+        Project: !Ref ProjectName
+
+  WorkflowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/states/${ProjectName}-${Environment}-task-workflow'
+      RetentionInDays: 30
+
+  # EventBridge Rule to trigger workflow
+  WorkflowScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-workflow-schedule'
+      Description: Trigger task workflow periodically
+      ScheduleExpression: rate(1 hour)
+      State: !If [IsProd, ENABLED, DISABLED]
+      Targets:
+        - Id: TaskWorkflow
+          Arn: !Ref TaskProcessingWorkflow
+          RoleArn: !GetAtt EventBridgeRole.Arn
+
+  EventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-eventbridge-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeStepFunctions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: !Ref TaskProcessingWorkflow
+
+  # ============================================================================
+  # CLOUDWATCH MONITORING
+  # ============================================================================
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasAlarmEmail
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-alarms'
+
+  AlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  AnalyticsDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${ProjectName}-${Environment}-dashboard'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Invocations",
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${TaskGeneratorFunction}"],
+                  [".", ".", ".", "${TaskWorkerFunction}"],
+                  [".", ".", ".", "${ValidateTaskFunction}"],
+                  [".", ".", ".", "${ProcessTaskFunction}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Duration (Cold Start Comparison)",
+                "metrics": [
+                  ["AWS/Lambda", "Duration", "FunctionName", "${TaskGeneratorFunction}"],
+                  [".", ".", ".", "${TaskWorkerFunction}"],
+                  [".", ".", ".", "${ValidateTaskFunction}"]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "SQS Queue Metrics",
+                "metrics": [
+                  ["AWS/SQS", "NumberOfMessagesReceived", "QueueName", "${TaskQueue.QueueName}"],
+                  [".", "ApproximateNumberOfMessagesVisible", ".", "."],
+                  [".", "NumberOfMessagesReceived", ".", "${TaskDLQ.QueueName}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Step Functions Executions",
+                "metrics": [
+                  ["AWS/States", "ExecutionsStarted", "StateMachineArn", "${TaskProcessingWorkflow}"],
+                  [".", "ExecutionsSucceeded", ".", "."],
+                  [".", "ExecutionsFailed", ".", "."]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+
+  TasksTableName:
+    Description: Tasks DynamoDB table name
+    Value: !Ref TasksTable
+
+  TaskQueueUrl:
+    Description: Task SQS queue URL
+    Value: !Ref TaskQueue
+
+  NotificationTopicArn:
+    Description: Notification SNS topic ARN
+    Value: !Ref NotificationTopic
+
+  WorkflowArn:
+    Description: Task processing workflow ARN
+    Value: !Ref TaskProcessingWorkflow
+
+  TaskGeneratorFunctionArn:
+    Description: Task generator Lambda function ARN
+    Value: !GetAtt TaskGeneratorFunction.Arn
+
+  TaskWorkerFunctionArn:
+    Description: Task worker Lambda function ARN
+    Value: !GetAtt TaskWorkerFunction.Arn
+
+  SnapStartEnabled:
+    Description: Whether SnapStart is enabled
+    Value: !Ref EnableSnapStart

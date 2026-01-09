@@ -1,0 +1,873 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Data Lake Analytics Platform - Serverless analytics with Glue, Athena, and Lake Formation'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+  ProjectName:
+    Type: String
+    Default: data-lake
+    Description: Project name prefix
+
+  GlueWorkerType:
+    Type: String
+    Default: G.1X
+    AllowedValues:
+      - G.1X
+      - G.2X
+    Description: Glue worker type
+
+  GlueWorkerCount:
+    Type: Number
+    Default: 2
+    MinValue: 2
+    MaxValue: 10
+    Description: Number of Glue workers
+
+  EnableLakeFormation:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable Lake Formation governance
+
+  AthenaQueryTimeout:
+    Type: Number
+    Default: 300
+    Description: Athena query timeout in seconds
+
+  RetentionDays:
+    Type: Number
+    Default: 90
+    Description: Data retention period in days
+
+  AlarmEmail:
+    Type: String
+    Default: ''
+    Description: Email for CloudWatch alarms
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
+  IsProd: !Equals [!Ref Environment, 'prod']
+  UseLakeFormation: !Equals [!Ref EnableLakeFormation, 'true']
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 60
+    MemorySize: 256
+    Tracing: Active
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: INFO
+        POWERTOOLS_SERVICE_NAME: !Ref ProjectName
+    Tags:
+      Environment: !Ref Environment
+      Project: !Ref ProjectName
+
+Resources:
+  # ============================================================================
+  # S3 BUCKETS
+  # ============================================================================
+  RawBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-raw-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+          - Id: ExpireOld
+            Status: Enabled
+            ExpirationInDays: !Ref RetentionDays
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ProcessedBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-processed-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-results-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # GLUE DATABASE AND TABLES
+  # ============================================================================
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Sub '${ProjectName}_${Environment}_db'
+        Description: !Sub 'Data lake analytics database for ${ProjectName}'
+
+  RawEventsTable:
+    Type: AWS::Glue::Table
+    DependsOn: GlueDatabase
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Sub '${ProjectName}_${Environment}_db'
+      TableInput:
+        Name: raw_events
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: json
+          projection.enabled: 'true'
+          projection.year.type: integer
+          projection.year.range: '2020,2030'
+          projection.month.type: integer
+          projection.month.range: '1,12'
+          projection.month.digits: '2'
+          projection.day.type: integer
+          projection.day.range: '1,31'
+          projection.day.digits: '2'
+          projection.hour.type: integer
+          projection.hour.range: '0,23'
+          projection.hour.digits: '2'
+          storage.location.template: !Sub 's3://${RawBucket}/raw/year=${!year}/month=${!month}/day=${!day}/hour=${!hour}'
+        StorageDescriptor:
+          Location: !Sub 's3://${RawBucket}/raw/'
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+          Columns:
+            - Name: event_id
+              Type: string
+            - Name: timestamp
+              Type: timestamp
+            - Name: event_type
+              Type: string
+            - Name: user_id
+              Type: string
+            - Name: session_id
+              Type: string
+            - Name: properties
+              Type: 'map<string,string>'
+            - Name: geo
+              Type: 'struct<country:string,city:string,lat:double,lon:double>'
+        PartitionKeys:
+          - Name: year
+            Type: string
+          - Name: month
+            Type: string
+          - Name: day
+            Type: string
+          - Name: hour
+            Type: string
+
+  ProcessedEventsTable:
+    Type: AWS::Glue::Table
+    DependsOn: GlueDatabase
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Sub '${ProjectName}_${Environment}_db'
+      TableInput:
+        Name: events
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: parquet
+          parquet.compression: SNAPPY
+          projection.enabled: 'true'
+          projection.year.type: integer
+          projection.year.range: '2020,2030'
+          projection.month.type: integer
+          projection.month.range: '1,12'
+          projection.month.digits: '2'
+          projection.day.type: integer
+          projection.day.range: '1,31'
+          projection.day.digits: '2'
+          projection.hour.type: integer
+          projection.hour.range: '0,23'
+          projection.hour.digits: '2'
+          storage.location.template: !Sub 's3://${ProcessedBucket}/processed/year=${!year}/month=${!month}/day=${!day}/hour=${!hour}'
+        StorageDescriptor:
+          Location: !Sub 's3://${ProcessedBucket}/processed/'
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+            Parameters:
+              serialization.format: '1'
+          Columns:
+            - Name: event_id
+              Type: string
+            - Name: timestamp
+              Type: timestamp
+            - Name: event_type
+              Type: string
+            - Name: user_id
+              Type: string
+            - Name: session_id
+              Type: string
+            - Name: properties
+              Type: 'map<string,string>'
+            - Name: geo
+              Type: 'struct<country:string,city:string,lat:double,lon:double>'
+        PartitionKeys:
+          - Name: year
+            Type: string
+          - Name: month
+            Type: string
+          - Name: day
+            Type: string
+          - Name: hour
+            Type: string
+
+  # ============================================================================
+  # GLUE ETL JOB AND CRAWLER
+  # ============================================================================
+  GlueRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-glue-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: GlueS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt RawBucket.Arn
+                  - !Sub '${RawBucket.Arn}/*'
+                  - !GetAtt ProcessedBucket.Arn
+                  - !Sub '${ProcessedBucket.Arn}/*'
+                  - !GetAtt ResultsBucket.Arn
+                  - !Sub '${ResultsBucket.Arn}/*'
+
+  ETLJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-etl'
+      Description: Transform JSON to Parquet with Snappy compression
+      Role: !GetAtt GlueRole.Arn
+      GlueVersion: '4.0'
+      WorkerType: !Ref GlueWorkerType
+      NumberOfWorkers: !Ref GlueWorkerCount
+      Timeout: 60
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub 's3://${ResultsBucket}/glue-scripts/etl_job.py'
+        PythonVersion: '3'
+      DefaultArguments:
+        '--job-language': python
+        '--enable-metrics': 'true'
+        '--enable-continuous-cloudwatch-log': 'true'
+        '--enable-glue-datacatalog': 'true'
+        '--source_path': !Sub 's3://${RawBucket}/raw/'
+        '--target_path': !Sub 's3://${ProcessedBucket}/processed/'
+        '--database': !Sub '${ProjectName}_${Environment}_db'
+        '--table_name': events
+      ExecutionProperty:
+        MaxConcurrentRuns: 2
+
+  GlueCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-crawler'
+      Role: !GetAtt GlueRole.Arn
+      DatabaseName: !Sub '${ProjectName}_${Environment}_db'
+      Targets:
+        S3Targets:
+          - Path: !Sub 's3://${ProcessedBucket}/processed/'
+      SchemaChangePolicy:
+        DeleteBehavior: LOG
+        UpdateBehavior: UPDATE_IN_DATABASE
+      Configuration: |
+        {
+          "Version": 1.0,
+          "Grouping": {
+            "TableGroupingPolicy": "CombineCompatibleSchemas"
+          },
+          "CrawlerOutput": {
+            "Partitions": {
+              "AddOrUpdateBehavior": "InheritFromTable"
+            }
+          }
+        }
+
+  # ============================================================================
+  # ATHENA WORKGROUP
+  # ============================================================================
+  AthenaWorkgroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-workgroup'
+      Description: Workgroup for data lake queries
+      State: ENABLED
+      WorkGroupConfiguration:
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+        ResultConfiguration:
+          OutputLocation: !Sub 's3://${ResultsBucket}/athena-results/'
+          EncryptionConfiguration:
+            EncryptionOption: SSE_S3
+        EngineVersion:
+          SelectedEngineVersion: Athena engine version 3
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # LAMBDA FUNCTIONS
+  # ============================================================================
+
+  # Ingest Function - Data ingestion endpoint
+  IngestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-ingest'
+      Handler: ingest_handler.handler
+      CodeUri: ../src/handlers/
+      Timeout: 60
+      MemorySize: 256
+      Description: Ingests data into the raw S3 bucket
+      Environment:
+        Variables:
+          RAW_BUCKET: !Ref RawBucket
+          PROCESSED_BUCKET: !Ref ProcessedBucket
+          RESULTS_BUCKET: !Ref ResultsBucket
+          GLUE_DATABASE: !Sub '${ProjectName}_${Environment}_db'
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroup
+          GLUE_ETL_JOB_NAME: !Ref ETLJob
+          GLUE_CRAWLER_NAME: !Ref GlueCrawler
+          ATHENA_QUERY_TIMEOUT: !Ref AthenaQueryTimeout
+      FunctionUrlConfig:
+        AuthType: !If [IsProd, AWS_IAM, NONE]
+        Cors:
+          AllowCredentials: true
+          AllowOrigins:
+            - '*'
+          AllowMethods:
+            - POST
+          AllowHeaders:
+            - content-type
+            - x-amz-date
+            - authorization
+          ExposeHeaders:
+            - x-amz-request-id
+          MaxAge: 86400
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref RawBucket
+        - S3ReadPolicy:
+            BucketName: !Ref ProcessedBucket
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - glue:StartJobRun
+                - glue:GetJobRun
+                - glue:StartCrawler
+                - glue:GetCrawler
+              Resource: '*'
+
+  IngestFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${IngestFunction}'
+      RetentionInDays: 30
+
+  # ETL Function - Triggers Glue ETL jobs
+  ETLFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-etl-trigger'
+      Handler: etl_handler.handler
+      CodeUri: ../src/handlers/
+      Timeout: 300
+      MemorySize: 256
+      Description: Triggers and monitors Glue ETL jobs
+      Environment:
+        Variables:
+          RAW_BUCKET: !Ref RawBucket
+          PROCESSED_BUCKET: !Ref ProcessedBucket
+          RESULTS_BUCKET: !Ref ResultsBucket
+          GLUE_DATABASE: !Sub '${ProjectName}_${Environment}_db'
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroup
+          GLUE_ETL_JOB_NAME: !Ref ETLJob
+          GLUE_CRAWLER_NAME: !Ref GlueCrawler
+      Events:
+        ScheduleEvent:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 hour)
+            Description: Trigger ETL processing every hour
+            Enabled: true
+      FunctionUrlConfig:
+        AuthType: AWS_IAM
+        Cors:
+          AllowCredentials: true
+          AllowOrigins:
+            - '*'
+          AllowMethods:
+            - POST
+          AllowHeaders:
+            - content-type
+            - x-amz-date
+            - authorization
+          MaxAge: 86400
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref RawBucket
+        - S3CrudPolicy:
+            BucketName: !Ref ProcessedBucket
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - glue:StartJobRun
+                - glue:GetJobRun
+                - glue:GetJobRuns
+                - glue:BatchStopJobRun
+                - glue:StartCrawler
+                - glue:GetCrawler
+                - glue:GetCrawlerMetrics
+              Resource: '*'
+
+  ETLFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ETLFunction}'
+      RetentionInDays: 30
+
+  # Query Function - Athena query execution
+  QueryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-query'
+      Handler: query_handler.handler
+      CodeUri: ../src/handlers/
+      Timeout: 60
+      MemorySize: 256
+      Description: Executes Athena queries and returns results
+      Environment:
+        Variables:
+          RAW_BUCKET: !Ref RawBucket
+          PROCESSED_BUCKET: !Ref ProcessedBucket
+          RESULTS_BUCKET: !Ref ResultsBucket
+          GLUE_DATABASE: !Sub '${ProjectName}_${Environment}_db'
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroup
+          ATHENA_QUERY_TIMEOUT: !Ref AthenaQueryTimeout
+      FunctionUrlConfig:
+        AuthType: !If [IsProd, AWS_IAM, NONE]
+        Cors:
+          AllowCredentials: true
+          AllowOrigins:
+            - '*'
+          AllowMethods:
+            - GET
+            - POST
+          AllowHeaders:
+            - content-type
+            - x-amz-date
+            - authorization
+          ExposeHeaders:
+            - x-amz-request-id
+          MaxAge: 86400
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref ProcessedBucket
+        - S3CrudPolicy:
+            BucketName: !Ref ResultsBucket
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - athena:StartQueryExecution
+                - athena:GetQueryExecution
+                - athena:GetQueryResults
+                - athena:StopQueryExecution
+                - athena:GetWorkGroup
+              Resource:
+                - !Sub 'arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${AthenaWorkgroup}'
+            - Effect: Allow
+              Action:
+                - glue:GetDatabase
+                - glue:GetDatabases
+                - glue:GetTable
+                - glue:GetTables
+                - glue:GetPartitions
+              Resource: '*'
+
+  QueryFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${QueryFunction}'
+      RetentionInDays: 30
+
+  # API Function - REST API endpoint
+  APIFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-api'
+      Handler: api_handler.handler
+      CodeUri: ../src/handlers/
+      Timeout: 60
+      MemorySize: 256
+      Description: REST API for data lake operations
+      Environment:
+        Variables:
+          RAW_BUCKET: !Ref RawBucket
+          PROCESSED_BUCKET: !Ref ProcessedBucket
+          RESULTS_BUCKET: !Ref ResultsBucket
+          GLUE_DATABASE: !Sub '${ProjectName}_${Environment}_db'
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroup
+          GLUE_ETL_JOB_NAME: !Ref ETLJob
+          GLUE_CRAWLER_NAME: !Ref GlueCrawler
+          ATHENA_QUERY_TIMEOUT: !Ref AthenaQueryTimeout
+      FunctionUrlConfig:
+        AuthType: !If [IsProd, AWS_IAM, NONE]
+        Cors:
+          AllowCredentials: true
+          AllowOrigins:
+            - '*'
+          AllowMethods:
+            - GET
+            - POST
+            - PUT
+            - DELETE
+            - OPTIONS
+          AllowHeaders:
+            - content-type
+            - x-amz-date
+            - authorization
+            - x-api-key
+          ExposeHeaders:
+            - x-amz-request-id
+          MaxAge: 86400
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref RawBucket
+        - S3ReadPolicy:
+            BucketName: !Ref ProcessedBucket
+        - S3CrudPolicy:
+            BucketName: !Ref ResultsBucket
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - athena:StartQueryExecution
+                - athena:GetQueryExecution
+                - athena:GetQueryResults
+                - athena:StopQueryExecution
+                - athena:GetWorkGroup
+              Resource:
+                - !Sub 'arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${AthenaWorkgroup}'
+            - Effect: Allow
+              Action:
+                - glue:GetDatabase
+                - glue:GetDatabases
+                - glue:GetTable
+                - glue:GetTables
+                - glue:GetPartitions
+                - glue:StartJobRun
+                - glue:GetJobRun
+                - glue:StartCrawler
+                - glue:GetCrawler
+              Resource: '*'
+
+  APIFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${APIFunction}'
+      RetentionInDays: 30
+
+  # ============================================================================
+  # LAKE FORMATION (CONDITIONAL)
+  # ============================================================================
+  LakeFormationSettings:
+    Type: AWS::LakeFormation::DataLakeSettings
+    Condition: UseLakeFormation
+    Properties:
+      Admins:
+        - DataLakePrincipalIdentifier: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+
+  LakeFormationRawLocation:
+    Type: AWS::LakeFormation::Resource
+    Condition: UseLakeFormation
+    Properties:
+      ResourceArn: !GetAtt RawBucket.Arn
+      UseServiceLinkedRole: true
+
+  LakeFormationProcessedLocation:
+    Type: AWS::LakeFormation::Resource
+    Condition: UseLakeFormation
+    Properties:
+      ResourceArn: !GetAtt ProcessedBucket.Arn
+      UseServiceLinkedRole: true
+
+  # ============================================================================
+  # CLOUDWATCH MONITORING
+  # ============================================================================
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasAlarmEmail
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-alarms'
+
+  AlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  ETLJobFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlarmEmail
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-etl-failures'
+      AlarmDescription: Alert when Glue ETL job fails
+      MetricName: glue.driver.aggregate.numFailedTasks
+      Namespace: Glue
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: JobName
+          Value: !Ref ETLJob
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  AnalyticsDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${ProjectName}-${Environment}-dashboard'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Invocations",
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${IngestFunction}"],
+                  [".", ".", ".", "${ETLFunction}"],
+                  [".", ".", ".", "${QueryFunction}"],
+                  [".", ".", ".", "${APIFunction}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Errors",
+                "metrics": [
+                  ["AWS/Lambda", "Errors", "FunctionName", "${IngestFunction}"],
+                  [".", ".", ".", "${ETLFunction}"],
+                  [".", ".", ".", "${QueryFunction}"],
+                  [".", ".", ".", "${APIFunction}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Glue Job Metrics",
+                "metrics": [
+                  ["Glue", "glue.driver.aggregate.numCompletedTasks", "JobName", "${ETLJob}", "JobRunId", "ALL"],
+                  [".", "glue.driver.aggregate.numFailedTasks", ".", ".", ".", "."]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Athena Query Performance",
+                "metrics": [
+                  ["AWS/Athena", "TotalExecutionTime", "WorkGroup", "${AthenaWorkgroup}"],
+                  [".", "ProcessedBytes", ".", "."]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 12,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "title": "S3 Bucket Size",
+                "metrics": [
+                  ["AWS/S3", "BucketSizeBytes", "BucketName", "${RawBucket}", "StorageType", "StandardStorage"],
+                  [".", ".", ".", "${ProcessedBucket}", ".", "."],
+                  [".", ".", ".", "${ResultsBucket}", ".", "."]
+                ],
+                "period": 86400,
+                "stat": "Average",
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  RawBucket:
+    Description: Raw data S3 bucket
+    Value: !Ref RawBucket
+
+  ProcessedBucket:
+    Description: Processed data S3 bucket
+    Value: !Ref ProcessedBucket
+
+  ResultsBucket:
+    Description: Query results S3 bucket
+    Value: !Ref ResultsBucket
+
+  GlueDatabase:
+    Description: Glue Data Catalog database
+    Value: !Sub '${ProjectName}_${Environment}_db'
+
+  ETLJobName:
+    Description: Glue ETL job name
+    Value: !Ref ETLJob
+
+  CrawlerName:
+    Description: Glue crawler name
+    Value: !Ref GlueCrawler
+
+  AthenaWorkgroup:
+    Description: Athena workgroup name
+    Value: !Ref AthenaWorkgroup
+
+  IngestFunctionUrl:
+    Description: Ingest function URL
+    Value: !GetAtt IngestFunctionUrl.FunctionUrl
+
+  ETLFunctionUrl:
+    Description: ETL function URL
+    Value: !GetAtt ETLFunctionUrl.FunctionUrl
+
+  QueryFunctionUrl:
+    Description: Query function URL
+    Value: !GetAtt QueryFunctionUrl.FunctionUrl
+
+  APIFunctionUrl:
+    Description: API function URL
+    Value: !GetAtt APIFunctionUrl.FunctionUrl
+
+  IngestFunctionArn:
+    Description: Ingest Lambda function ARN
+    Value: !GetAtt IngestFunction.Arn
+
+  ETLFunctionArn:
+    Description: ETL Lambda function ARN
+    Value: !GetAtt ETLFunction.Arn
+
+  QueryFunctionArn:
+    Description: Query Lambda function ARN
+    Value: !GetAtt QueryFunction.Arn
+
+  APIFunctionArn:
+    Description: API Lambda function ARN
+    Value: !GetAtt APIFunction.Arn

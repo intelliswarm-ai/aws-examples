@@ -1,0 +1,50 @@
+version = 0.1
+
+[default]
+[default.global.parameters]
+stack_name = "doc-proc-dev"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.validate.parameters]
+lint = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND"
+confirm_changeset = true
+resolve_s3 = true
+s3_prefix = "doc-proc"
+region = "eu-central-1"
+parameter_overrides = "Environment=\"dev\""
+
+[default.sync.parameters]
+watch = true
+
+# Development environment
+[dev]
+[dev.deploy.parameters]
+stack_name = "doc-proc-dev"
+s3_prefix = "doc-proc-dev"
+region = "eu-central-1"
+confirm_changeset = false
+parameter_overrides = "Environment=\"dev\" BedrockModelId=\"anthropic.claude-3-haiku-20240307-v1:0\" EnablePiiDetection=\"true\""
+
+# Staging environment
+[staging]
+[staging.deploy.parameters]
+stack_name = "doc-proc-staging"
+s3_prefix = "doc-proc-staging"
+region = "eu-central-1"
+confirm_changeset = true
+parameter_overrides = "Environment=\"staging\" BedrockModelId=\"anthropic.claude-3-sonnet-20240229-v1:0\" EnablePiiDetection=\"true\" EnableModeration=\"true\""
+
+# Production environment
+[prod]
+[prod.deploy.parameters]
+stack_name = "doc-proc-prod"
+s3_prefix = "doc-proc-prod"
+region = "eu-central-1"
+confirm_changeset = true
+parameter_overrides = "Environment=\"prod\" BedrockModelId=\"anthropic.claude-3-sonnet-20240229-v1:0\" EnablePiiDetection=\"true\" EnableModeration=\"true\" BedrockMaxTokens=\"8192\""

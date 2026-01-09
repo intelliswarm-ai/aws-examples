@@ -1,0 +1,363 @@
+{
+  "Comment": "EMR Spark Fraud Detection Pipeline",
+  "StartAt": "ValidateInput",
+  "States": {
+    "ValidateInput": {
+      "Type": "Task",
+      "Resource": "${OrchestrationLambdaArn}",
+      "Parameters": {
+        "action": "validate",
+        "execution_id.$": "$$.Execution.Id",
+        "input.$": "$"
+      },
+      "ResultPath": "$.validation",
+      "Next": "CheckExecutionMode",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NotifyFailure",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "CheckExecutionMode": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.execution_mode",
+          "StringEquals": "TRAINING",
+          "Next": "CreateTrainingCluster"
+        },
+        {
+          "Variable": "$.execution_mode",
+          "StringEquals": "SCORING_ONLY",
+          "Next": "CreateScoringCluster"
+        }
+      ],
+      "Default": "CreateFullCluster"
+    },
+    "CreateFullCluster": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::elasticmapreduce:createCluster.sync",
+      "Parameters": {
+        "Name.$": "States.Format('${ProjectName}-${Environment}-batch-{}', $$.Execution.Name)",
+        "ReleaseLabel": "${ReleaseLabel}",
+        "Applications": [
+          {"Name": "Spark"},
+          {"Name": "Hadoop"}
+        ],
+        "ServiceRole": "${EMRServiceRoleArn}",
+        "JobFlowRole": "${EMREC2InstanceProfileArn}",
+        "LogUri": "s3://${LogsBucket}/emr-logs/batch/",
+        "VisibleToAllUsers": true,
+        "Instances": {
+          "KeepJobFlowAliveWhenNoSteps": true,
+          "InstanceGroups": [
+            {
+              "Name": "Master",
+              "InstanceRole": "MASTER",
+              "InstanceType": "${MasterInstanceType}",
+              "InstanceCount": 1,
+              "Market": "ON_DEMAND"
+            },
+            {
+              "Name": "Core",
+              "InstanceRole": "CORE",
+              "InstanceType": "${CoreInstanceType}",
+              "InstanceCount": ${CoreInstanceCount},
+              "Market": "SPOT"
+            }
+          ],
+          "Ec2SubnetId": "${EMRSubnetId}"
+        },
+        "Configurations": [
+          {
+            "Classification": "spark-defaults",
+            "Properties": {
+              "spark.sql.shuffle.partitions": "200",
+              "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
+            }
+          }
+        ],
+        "Tags": [
+          {"Key": "Environment", "Value": "${Environment}"},
+          {"Key": "Project", "Value": "${ProjectName}"},
+          {"Key": "Purpose", "Value": "batch-pipeline"}
+        ]
+      },
+      "ResultPath": "$.cluster",
+      "Next": "FeatureEngineering",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NotifyFailure",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "CreateTrainingCluster": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::elasticmapreduce:createCluster.sync",
+      "Parameters": {
+        "Name.$": "States.Format('${ProjectName}-${Environment}-training-{}', $$.Execution.Name)",
+        "ReleaseLabel": "${ReleaseLabel}",
+        "Applications": [
+          {"Name": "Spark"},
+          {"Name": "Hadoop"}
+        ],
+        "ServiceRole": "${EMRServiceRoleArn}",
+        "JobFlowRole": "${EMREC2InstanceProfileArn}",
+        "LogUri": "s3://${LogsBucket}/emr-logs/training/",
+        "VisibleToAllUsers": true,
+        "Instances": {
+          "KeepJobFlowAliveWhenNoSteps": true,
+          "InstanceGroups": [
+            {
+              "Name": "Master",
+              "InstanceRole": "MASTER",
+              "InstanceType": "${MasterInstanceType}",
+              "InstanceCount": 1,
+              "Market": "ON_DEMAND"
+            },
+            {
+              "Name": "Core",
+              "InstanceRole": "CORE",
+              "InstanceType": "${CoreInstanceType}",
+              "InstanceCount": ${CoreInstanceCount},
+              "Market": "SPOT"
+            }
+          ],
+          "Ec2SubnetId": "${EMRSubnetId}"
+        }
+      },
+      "ResultPath": "$.cluster",
+      "Next": "FeatureEngineering",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NotifyFailure",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "CreateScoringCluster": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::elasticmapreduce:createCluster.sync",
+      "Parameters": {
+        "Name.$": "States.Format('${ProjectName}-${Environment}-scoring-{}', $$.Execution.Name)",
+        "ReleaseLabel": "${ReleaseLabel}",
+        "Applications": [
+          {"Name": "Spark"},
+          {"Name": "Hadoop"}
+        ],
+        "ServiceRole": "${EMRServiceRoleArn}",
+        "JobFlowRole": "${EMREC2InstanceProfileArn}",
+        "LogUri": "s3://${LogsBucket}/emr-logs/scoring/",
+        "VisibleToAllUsers": true,
+        "Instances": {
+          "KeepJobFlowAliveWhenNoSteps": true,
+          "InstanceGroups": [
+            {
+              "Name": "Master",
+              "InstanceRole": "MASTER",
+              "InstanceType": "${MasterInstanceType}",
+              "InstanceCount": 1,
+              "Market": "ON_DEMAND"
+            },
+            {
+              "Name": "Core",
+              "InstanceRole": "CORE",
+              "InstanceType": "${CoreInstanceType}",
+              "InstanceCount": 2,
+              "Market": "SPOT"
+            }
+          ],
+          "Ec2SubnetId": "${EMRSubnetId}"
+        }
+      },
+      "ResultPath": "$.cluster",
+      "Next": "BatchScoring",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NotifyFailure",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "FeatureEngineering": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::elasticmapreduce:addStep.sync",
+      "Parameters": {
+        "ClusterId.$": "$.cluster.ClusterId",
+        "Step": {
+          "Name": "FeatureEngineering",
+          "ActionOnFailure": "CONTINUE",
+          "HadoopJarStep": {
+            "Jar": "command-runner.jar",
+            "Args": [
+              "spark-submit",
+              "--deploy-mode", "cluster",
+              "--master", "yarn",
+              "--conf", "spark.sql.shuffle.partitions=200",
+              "s3://${DataBucket}/spark/jobs/feature_engineering.py",
+              "--data-bucket", "${DataBucket}",
+              "--date.$", "$.execution_date"
+            ]
+          }
+        }
+      },
+      "ResultPath": "$.feature_step",
+      "Next": "CheckTrainingRequired",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "TerminateClusterOnFailure",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "CheckTrainingRequired": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.execution_mode",
+          "StringEquals": "TRAINING",
+          "Next": "ModelTraining"
+        },
+        {
+          "Variable": "$.execution_mode",
+          "StringEquals": "FULL",
+          "Next": "ModelTraining"
+        }
+      ],
+      "Default": "BatchScoring"
+    },
+    "ModelTraining": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::elasticmapreduce:addStep.sync",
+      "Parameters": {
+        "ClusterId.$": "$.cluster.ClusterId",
+        "Step": {
+          "Name": "ModelTraining",
+          "ActionOnFailure": "CONTINUE",
+          "HadoopJarStep": {
+            "Jar": "command-runner.jar",
+            "Args": [
+              "spark-submit",
+              "--deploy-mode", "cluster",
+              "--master", "yarn",
+              "--conf", "spark.driver.maxResultSize=4g",
+              "s3://${DataBucket}/spark/jobs/model_training.py",
+              "--data-bucket", "${DataBucket}",
+              "--models-bucket", "${ModelsBucket}",
+              "--model-version", "${ModelVersion}"
+            ]
+          }
+        }
+      },
+      "ResultPath": "$.training_step",
+      "Next": "BatchScoring",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "TerminateClusterOnFailure",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "BatchScoring": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::elasticmapreduce:addStep.sync",
+      "Parameters": {
+        "ClusterId.$": "$.cluster.ClusterId",
+        "Step": {
+          "Name": "BatchScoring",
+          "ActionOnFailure": "CONTINUE",
+          "HadoopJarStep": {
+            "Jar": "command-runner.jar",
+            "Args": [
+              "spark-submit",
+              "--deploy-mode", "cluster",
+              "--master", "yarn",
+              "s3://${DataBucket}/spark/jobs/batch_scoring.py",
+              "--data-bucket", "${DataBucket}",
+              "--models-bucket", "${ModelsBucket}",
+              "--model-version", "${ModelVersion}",
+              "--date.$", "$.execution_date"
+            ]
+          }
+        }
+      },
+      "ResultPath": "$.scoring_step",
+      "Next": "ProcessResults",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "TerminateClusterOnFailure",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "ProcessResults": {
+      "Type": "Task",
+      "Resource": "${OrchestrationLambdaArn}",
+      "Parameters": {
+        "action": "process_results",
+        "execution_id.$": "$$.Execution.Id",
+        "cluster_id.$": "$.cluster.ClusterId",
+        "execution_date.$": "$.execution_date"
+      },
+      "ResultPath": "$.results",
+      "Next": "TerminateCluster",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "TerminateClusterOnFailure",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "TerminateCluster": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::elasticmapreduce:terminateCluster.sync",
+      "Parameters": {
+        "ClusterId.$": "$.cluster.ClusterId"
+      },
+      "Next": "NotifySuccess"
+    },
+    "TerminateClusterOnFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::elasticmapreduce:terminateCluster.sync",
+      "Parameters": {
+        "ClusterId.$": "$.cluster.ClusterId"
+      },
+      "Next": "NotifyFailure"
+    },
+    "NotifySuccess": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${PipelineNotificationsTopicArn}",
+        "Subject": "Fraud Detection Pipeline Completed Successfully",
+        "Message.$": "States.Format('Pipeline execution {} completed successfully. Results: {}', $$.Execution.Id, States.JsonToString($.results))"
+      },
+      "End": true
+    },
+    "NotifyFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${PipelineNotificationsTopicArn}",
+        "Subject": "Fraud Detection Pipeline Failed",
+        "Message.$": "States.Format('Pipeline execution {} failed. Error: {}', $$.Execution.Id, States.JsonToString($.error))"
+      },
+      "Next": "FailExecution"
+    },
+    "FailExecution": {
+      "Type": "Fail",
+      "Error": "PipelineExecutionFailed",
+      "Cause": "Pipeline execution encountered an error"
+    }
+  }
+}

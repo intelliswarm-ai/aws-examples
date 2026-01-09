@@ -1,0 +1,557 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Call Center Sentiment Analysis Platform - NLP-powered transcript analysis with OpenSearch'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+  ProjectName:
+    Type: String
+    Default: call-sentiment
+    Description: Project name prefix
+
+  OpenSearchInstanceType:
+    Type: String
+    Default: t3.small.search
+    AllowedValues:
+      - t3.small.search
+      - t3.medium.search
+      - m6g.large.search
+    Description: OpenSearch instance type
+
+  OpenSearchInstanceCount:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 10
+    Description: Number of OpenSearch instances
+
+  OpenSearchVolumeSize:
+    Type: Number
+    Default: 100
+    MinValue: 10
+    MaxValue: 1000
+    Description: EBS volume size in GB
+
+  OpenSearchMasterUser:
+    Type: String
+    Default: admin
+    Description: OpenSearch master username
+
+  OpenSearchMasterPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: OpenSearch master password
+
+  RetentionDays:
+    Type: Number
+    Default: 90
+    Description: Data retention period in days
+
+  AlarmEmail:
+    Type: String
+    Default: ''
+    Description: Email for CloudWatch alarms
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
+  IsProd: !Equals [!Ref Environment, 'prod']
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 60
+    MemorySize: 256
+    Tracing: Active
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: INFO
+        POWERTOOLS_SERVICE_NAME: !Ref ProjectName
+    Tags:
+      Environment: !Ref Environment
+      Project: !Ref ProjectName
+
+Resources:
+  # ============================================================================
+  # S3 BUCKETS
+  # ============================================================================
+  TranscriptsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-transcripts-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+          - Id: ExpireOld
+            Status: Enabled
+            ExpirationInDays: !Ref RetentionDays
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Function: !GetAtt TranscriptProcessorFunction.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: .json
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  OutputBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-output-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Function: !GetAtt ResultIndexerFunction.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: results/
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # OPENSEARCH DOMAIN
+  # ============================================================================
+  OpenSearchDomain:
+    Type: AWS::OpenSearchService::Domain
+    Properties:
+      DomainName: !Sub '${ProjectName}-${Environment}'
+      EngineVersion: OpenSearch_2.11
+      ClusterConfig:
+        InstanceType: !Ref OpenSearchInstanceType
+        InstanceCount: !Ref OpenSearchInstanceCount
+        DedicatedMasterEnabled: false
+        ZoneAwarenessEnabled: !If [IsProd, true, false]
+      EBSOptions:
+        EBSEnabled: true
+        VolumeSize: !Ref OpenSearchVolumeSize
+        VolumeType: gp3
+      EncryptionAtRestOptions:
+        Enabled: true
+      NodeToNodeEncryptionOptions:
+        Enabled: true
+      DomainEndpointOptions:
+        EnforceHTTPS: true
+        TLSSecurityPolicy: Policy-Min-TLS-1-2-2019-07
+      AdvancedSecurityOptions:
+        Enabled: true
+        InternalUserDatabaseEnabled: true
+        MasterUserOptions:
+          MasterUserName: !Ref OpenSearchMasterUser
+          MasterUserPassword: !Ref OpenSearchMasterPassword
+      AccessPolicies:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: '*'
+            Action: 'es:*'
+            Resource: !Sub 'arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${ProjectName}-${Environment}/*'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================================
+  # LAMBDA FUNCTIONS
+  # ============================================================================
+
+  # Transcript Processor - Triggered by S3
+  TranscriptProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-transcript-processor'
+      Handler: transcript_processor.handler
+      CodeUri: ../src/handlers/
+      Timeout: 300
+      MemorySize: 512
+      Description: Processes uploaded transcripts and initiates sentiment analysis
+      Environment:
+        Variables:
+          TRANSCRIPTS_BUCKET: !Ref TranscriptsBucket
+          OUTPUT_BUCKET: !Ref OutputBucket
+          OPENSEARCH_ENDPOINT: !GetAtt OpenSearchDomain.DomainEndpoint
+          INDEX_NAME: call-sentiment-transcripts
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref TranscriptsBucket
+        - S3WritePolicy:
+            BucketName: !Ref OutputBucket
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - comprehend:DetectSentiment
+                - comprehend:BatchDetectSentiment
+                - comprehend:DetectEntities
+                - comprehend:DetectKeyPhrases
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - es:ESHttpPost
+                - es:ESHttpPut
+                - es:ESHttpGet
+              Resource: !Sub '${OpenSearchDomain.Arn}/*'
+
+  TranscriptProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${TranscriptProcessorFunction}'
+      RetentionInDays: 30
+
+  TranscriptProcessorS3Permission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TranscriptProcessorFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub 'arn:aws:s3:::${ProjectName}-${Environment}-transcripts-${AWS::AccountId}'
+
+  # Comprehend Handler - Batch processing
+  ComprehendHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-comprehend-handler'
+      Handler: comprehend_handler.handler
+      CodeUri: ../src/handlers/
+      Timeout: 900
+      MemorySize: 1024
+      Description: Handles batch Comprehend jobs for large-scale analysis
+      Environment:
+        Variables:
+          TRANSCRIPTS_BUCKET: !Ref TranscriptsBucket
+          OUTPUT_BUCKET: !Ref OutputBucket
+          COMPREHEND_ROLE_ARN: !GetAtt ComprehendRole.Arn
+      Events:
+        ScheduleEvent:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 hour)
+            Description: Trigger batch Comprehend processing every hour
+            Enabled: true
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref TranscriptsBucket
+        - S3WritePolicy:
+            BucketName: !Ref OutputBucket
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - comprehend:StartSentimentDetectionJob
+                - comprehend:StartEntitiesDetectionJob
+                - comprehend:StartKeyPhrasesDetectionJob
+                - comprehend:DescribeSentimentDetectionJob
+                - comprehend:ListSentimentDetectionJobs
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - iam:PassRole
+              Resource: !GetAtt ComprehendRole.Arn
+
+  ComprehendHandlerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ComprehendHandlerFunction}'
+      RetentionInDays: 30
+
+  # Result Indexer - Indexes results to OpenSearch
+  ResultIndexerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-result-indexer'
+      Handler: result_indexer.handler
+      CodeUri: ../src/handlers/
+      Timeout: 300
+      Description: Indexes sentiment analysis results to OpenSearch
+      Environment:
+        Variables:
+          OUTPUT_BUCKET: !Ref OutputBucket
+          OPENSEARCH_ENDPOINT: !GetAtt OpenSearchDomain.DomainEndpoint
+          INDEX_NAME: call-sentiment-transcripts
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref OutputBucket
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - es:ESHttpPost
+                - es:ESHttpPut
+                - es:ESHttpGet
+              Resource: !Sub '${OpenSearchDomain.Arn}/*'
+
+  ResultIndexerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ResultIndexerFunction}'
+      RetentionInDays: 30
+
+  ResultIndexerS3Permission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ResultIndexerFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub 'arn:aws:s3:::${ProjectName}-${Environment}-output-${AWS::AccountId}'
+
+  # API Handler - REST API
+  ApiHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-api-handler'
+      Handler: api_handler.handler
+      CodeUri: ../src/handlers/
+      Timeout: 30
+      Description: REST API for querying sentiment analysis results
+      Environment:
+        Variables:
+          OPENSEARCH_ENDPOINT: !GetAtt OpenSearchDomain.DomainEndpoint
+          INDEX_NAME: call-sentiment-transcripts
+      Events:
+        ApiHealth:
+          Type: Api
+          Properties:
+            Path: /health
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        ApiSearch:
+          Type: Api
+          Properties:
+            Path: /search
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        ApiAnalytics:
+          Type: Api
+          Properties:
+            Path: /analytics
+            Method: GET
+            RestApiId: !Ref ApiGateway
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - es:ESHttpPost
+                - es:ESHttpGet
+              Resource: !Sub '${OpenSearchDomain.Arn}/*'
+
+  ApiHandlerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ApiHandlerFunction}'
+      RetentionInDays: 30
+
+  # ============================================================================
+  # API GATEWAY
+  # ============================================================================
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-api'
+      StageName: !Ref Environment
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: "'*'"
+      Tags:
+        Environment: !Ref Environment
+        Project: !Ref ProjectName
+
+  # ============================================================================
+  # IAM ROLES
+  # ============================================================================
+  ComprehendRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-comprehend-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: comprehend.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ComprehendS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt TranscriptsBucket.Arn
+                  - !Sub '${TranscriptsBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource:
+                  - !Sub '${OutputBucket.Arn}/*'
+
+  # ============================================================================
+  # CLOUDWATCH MONITORING
+  # ============================================================================
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasAlarmEmail
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-alarms'
+
+  AlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  AnalyticsDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${ProjectName}-${Environment}-dashboard'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Invocations",
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${TranscriptProcessorFunction}"],
+                  [".", ".", ".", "${ComprehendHandlerFunction}"],
+                  [".", ".", ".", "${ResultIndexerFunction}"],
+                  [".", ".", ".", "${ApiHandlerFunction}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Errors",
+                "metrics": [
+                  ["AWS/Lambda", "Errors", "FunctionName", "${TranscriptProcessorFunction}"],
+                  [".", ".", ".", "${ComprehendHandlerFunction}"],
+                  [".", ".", ".", "${ResultIndexerFunction}"],
+                  [".", ".", ".", "${ApiHandlerFunction}"]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "OpenSearch Cluster Health",
+                "metrics": [
+                  ["AWS/ES", "ClusterStatus.green", "DomainName", "${OpenSearchDomain}", "ClientId", "${AWS::AccountId}"],
+                  [".", "ClusterStatus.yellow", ".", ".", ".", "."],
+                  [".", "ClusterStatus.red", ".", ".", ".", "."]
+                ],
+                "period": 60,
+                "stat": "Maximum",
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  TranscriptsBucket:
+    Description: S3 bucket for transcripts
+    Value: !Ref TranscriptsBucket
+
+  OutputBucket:
+    Description: S3 bucket for output
+    Value: !Ref OutputBucket
+
+  OpenSearchEndpoint:
+    Description: OpenSearch domain endpoint
+    Value: !GetAtt OpenSearchDomain.DomainEndpoint
+
+  OpenSearchDashboardUrl:
+    Description: OpenSearch Dashboards URL
+    Value: !Sub 'https://${OpenSearchDomain.DomainEndpoint}/_dashboards'
+
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+
+  TranscriptProcessorFunction:
+    Description: Transcript processor Lambda function ARN
+    Value: !GetAtt TranscriptProcessorFunction.Arn
+
+  ComprehendHandlerFunction:
+    Description: Comprehend handler Lambda function ARN
+    Value: !GetAtt ComprehendHandlerFunction.Arn
+
+  ResultIndexerFunction:
+    Description: Result indexer Lambda function ARN
+    Value: !GetAtt ResultIndexerFunction.Arn
+
+  ApiHandlerFunction:
+    Description: API handler Lambda function ARN
+    Value: !GetAtt ApiHandlerFunction.Arn
