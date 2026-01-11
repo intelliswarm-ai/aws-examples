@@ -130,6 +130,30 @@ flowchart TD
 | Snowball Edge Compute | 42 TB + compute | Edge processing |
 | Snowmobile | 100 PB | Data center migrations |
 
+## Snowball Target Limitations
+
+| Snowball Can Target | Snowball Cannot Target |
+|---------------------|------------------------|
+| S3 Standard | Glacier (directly) |
+| S3 Standard-IA | Glacier Deep Archive (directly) |
+
+**Correct Pattern:**
+```
+Snowball → S3 Standard → Lifecycle Policy → Glacier Deep Archive (same day)
+```
+
+> **Rule:** Snowball cannot write directly to Glacier. Use S3 + lifecycle policy.
+
+## DataSync Connectivity Options
+
+| Connection | Endpoint Type | Use Case |
+|------------|---------------|----------|
+| Public internet | Public endpoint | Simple setup |
+| Direct Connect | VPC endpoint (PrivateLink) | Private, secure path |
+| VPN | VPC endpoint (PrivateLink) | Encrypted path |
+
+> **Rule:** On-prem NFS to EFS + Direct Connect → DataSync + PrivateLink VPC endpoint
+
 ## Trade-off Matrix
 
 | Aspect | DataSync | Snowball | Direct Transfer |

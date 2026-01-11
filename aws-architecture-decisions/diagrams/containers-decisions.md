@@ -127,7 +127,21 @@ Benefits:
 - Follows least privilege
 ```
 
-> **Rule:** EKS pod-level AWS permissions → IRSA
+**IRSA vs Other Approaches:**
+
+| Approach | Permission Scope | Security |
+|----------|-----------------|----------|
+| IRSA (recommended) | Per pod/service account | Best (least privilege) |
+| Instance Profile | All pods on node | Weak (over-privileged) |
+| Shared Service Account | Multiple pods | Medium |
+
+**Example Pattern:**
+```
+UI Pod ──────────────────→ Service Account A → IAM Role → DynamoDB only
+Data Processing Pod ─────→ Service Account B → IAM Role → S3 only
+```
+
+> **Rule:** EKS pod-level AWS permissions → IRSA (one role per service account)
 
 ## On-Premises Containers
 
@@ -217,6 +231,35 @@ Benefits:
 | ECR Image Scanning | Vulnerability detection in images |
 | Amazon Inspector | CVE scanning for ECR images |
 | ECR Lifecycle Policies | Remove old/untagged images |
+
+## EKS Node Scaling
+
+| Component | Scales | Scope |
+|-----------|--------|-------|
+| HPA (Horizontal Pod Autoscaler) | Pods | Application workload |
+| Cluster Autoscaler | EC2 Nodes | Infrastructure capacity |
+| Karpenter | EC2 Nodes | Faster, more flexible (newer) |
+
+**Common Issue:** HPA scales pods, but nodes don't scale.
+**Cause:** Cluster Autoscaler not deployed.
+**Fix:** Deploy Cluster Autoscaler integrated with ASG.
+
+> **Rule:** EKS node auto-scaling (keep EC2) → Kubernetes Cluster Autoscaler
+
+## EFS for Containers
+
+| Use Case | Solution |
+|----------|----------|
+| Shared storage across pods | EFS |
+| Persistent storage for Fargate | EFS |
+| High IOPS container storage | EBS (EC2 only) |
+
+**EFS + Fargate:**
+- POSIX-compliant
+- Multi-AZ by default
+- Works natively with ECS and EKS Fargate
+
+> **Rule:** "POSIX" + "Fargate" + "persistent" → EFS
 
 ## Related Decisions
 

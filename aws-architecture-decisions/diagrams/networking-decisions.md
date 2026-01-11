@@ -375,6 +375,78 @@ Internet → ALB SG (443 from 0.0.0.0/0) → EC2 SG (80 from ALB SG) → RDS SG 
 | VPC to many VPCs | Transit Gateway |
 | Private AWS service access | VPC Endpoints |
 | Cross-account service | PrivateLink |
+| Share VPC subnets (cheapest) | Resource Access Manager (RAM) |
+
+## Private Hosted Zone Requirements
+
+| VPC Setting | Required |
+|-------------|----------|
+| enableDnsHostnames | Yes |
+| enableDnsSupport | Yes |
+
+> **Rule:** Private hosted zone not resolving → check VPC DNS settings first. Both settings must be enabled.
+
+## Multi-Account VPC Patterns
+
+| Pattern | Use Case | Implementation |
+|---------|----------|----------------|
+| Hub-and-spoke | Centralized services | Transit Gateway |
+| Shared Services VPC | Common tooling | Transit Gateway + shared VPC |
+| VPC Sharing | Cost optimization | RAM (share subnets) |
+| Full mesh | Legacy (avoid) | VPC Peering (doesn't scale) |
+
+> **Rules:**
+> - Many VPCs → Transit Gateway (not full-mesh peering)
+> - Shared tooling → Shared Services VPC
+> - Cheapest cross-account → RAM (VPC Sharing)
+
+## DNS TTL Caching
+
+| Situation | Impact |
+|-----------|--------|
+| DNS record updated | Clients use cached IP until TTL expires |
+| Low TTL (60s) | Faster propagation, more DNS queries |
+| High TTL (24h) | Slower propagation, fewer DNS queries |
+
+> **Rule:** DNS change not taking effect → TTL caching. Lower TTL before migrations.
+
+## PrivateLink for Third-Party SaaS
+
+| Approach | Traffic Path | Security |
+|----------|--------------|----------|
+| PrivateLink | AWS network only | Best (no public internet) |
+| VPC Peering | Direct VPC connection | Good (bidirectional) |
+| Internet | Public internet | Lowest |
+
+**PrivateLink Benefits:**
+- Unidirectional (consumer → provider)
+- No CIDR overlap concerns
+- Private DNS resolution
+
+> **Rule:** Private access to third-party AWS-hosted SaaS → PrivateLink
+
+## Cross-Zone Load Balancing
+
+| Setting | Traffic Distribution |
+|---------|---------------------|
+| Enabled | Evenly across ALL targets |
+| Disabled | Evenly across AZs first, then targets |
+
+**Example (2 AZs, 4 + 6 targets):**
+- Enabled: Each target gets ~10%
+- Disabled: AZ-A targets get 12.5%, AZ-B targets get ~8.3%
+
+> **Rule:** Cross-zone disabled + uneven targets = uneven distribution per target
+
+## Hybrid Connectivity Encryption
+
+| Option | Encryption |
+|--------|------------|
+| Site-to-Site VPN | Yes (IPsec) |
+| Direct Connect | No (add VPN or MACsec) |
+| DX + VPN | Yes |
+
+> **Rule:** "Encrypted at network layer" → Site-to-Site VPN (not DX alone)
 
 ## Related Decisions
 

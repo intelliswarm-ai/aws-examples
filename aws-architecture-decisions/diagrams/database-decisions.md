@@ -126,6 +126,75 @@ flowchart TD
 
 > **Key Insight:** Multi-AZ = HA (sync) | Read Replicas = Scale/DR (async)
 
+## Aurora Global Database
+
+| Metric | Value |
+|--------|-------|
+| Cross-region replication lag | <1 second |
+| RPO | ~1 second |
+| RTO | ~1 minute (managed failover) |
+| Secondary regions | Up to 5 |
+| Read replicas per region | Up to 16 |
+
+> **Rule:** Global + relational + low RPO/RTO → Aurora Global Database
+
+## RDS Proxy
+
+| Benefit | Explanation |
+|---------|-------------|
+| Connection pooling | Reduces DB connection overhead |
+| Multiplexing | Shares connections across many clients |
+| Failover handling | Automatic failover, reduced impact |
+| IAM authentication | No credentials in code |
+
+**Use Cases:**
+- Lambda + RDS (prevents connection storms)
+- Microservices with many DB connections
+- Applications with frequent short connections
+
+> **Rule:** Too many DB connections or Lambda + RDS → RDS Proxy
+
+## DynamoDB Capacity Modes
+
+| Mode | Scaling | Best For |
+|------|---------|----------|
+| On-Demand | Instant, automatic | Unpredictable, spiky, unknown traffic |
+| Provisioned + Auto-scaling | Gradual (may lag) | Predictable with gradual variations |
+
+> **Rule:** "Spikes happen very quickly" → On-Demand. "Gradual predictable growth" → Provisioned + Auto-scaling.
+
+## DynamoDB Protection Options
+
+| Feature | Protects Against | Scope |
+|---------|-----------------|-------|
+| PITR (Point-in-Time Recovery) | Accidental writes, deletes, corruption | Data recovery, 35 days |
+| Deletion Protection | Table deletion | Table only |
+| On-demand Backups | Manual snapshots | Point-in-time |
+
+> **Rule:** "Accidental deletion" + "data recovery" → PITR. "Prevent table deletion" → Deletion Protection.
+
+## Neptune (Graph Database)
+
+| Use Case | Query Type |
+|----------|------------|
+| Social networks | Friend of friend |
+| Fraud detection | Relationship patterns |
+| Knowledge graphs | Entity connections |
+| Recommendation engines | Graph traversal |
+
+> **Rule:** "Relationship queries" + "social graph" + "fraud detection" → Neptune
+
+## RDS Disaster Recovery
+
+| Scope | Solution | RTO/RPO |
+|-------|----------|---------|
+| Same Region HA | Multi-AZ | Automatic failover |
+| Same Region Recovery | Automated Backups | Point-in-time |
+| Cross-Region DR | Cross-Region Read Replicas | Async, manual promotion |
+| Cross-Region Backup | Snapshot Copy | Manual |
+
+> **Rule:** RDS automated backups stay in same region. Cross-region DR → Cross-Region Read Replicas.
+
 ## Cost Comparison
 
 | Service | Pricing Model | Best For |

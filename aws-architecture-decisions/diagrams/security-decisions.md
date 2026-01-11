@@ -152,6 +152,16 @@ flowchart TD
 > - API audit → CloudTrail
 > - Multi-account security logs → Security Lake
 
+## Security Log Aggregation Options
+
+| Solution | Effort | Features |
+|----------|--------|----------|
+| Security Lake | Lowest | Auto-collection, OCSF format, built-in |
+| Lake Formation + Glue | Medium | Custom ETL, flexible schema |
+| Lambda + S3 | Highest | Full custom, maximum control |
+
+> **Rule:** Multi-account security logs + least effort → Amazon Security Lake
+
 ## Secrets Management Comparison
 
 | Service | Use Case | Rotation |
@@ -211,11 +221,18 @@ flowchart TD
 | Key | Purpose | Example |
 |-----|---------|---------|
 | aws:SourceIp | Caller's IP address | Restrict API calls by location |
+| aws:SourceVpc | Caller's VPC | Internal VPC access only |
+| aws:SourceVpce | VPC endpoint used | Specific endpoint required |
 | aws:RequestedRegion | Region for resource creation | Restrict deployments to regions |
-| aws:VpcSourceIp | Private IP within VPC | Internal service restrictions |
 | aws:PrincipalOrgID | Organization restriction | Cross-account within org |
+| aws:MultiFactorAuthPresent | MFA used | Require MFA for sensitive actions |
+| s3:x-amz-acl | S3 ACL requirement | Require specific ACL on PUTs |
+| ec2:InstanceType | Instance type restriction | Limit to specific types |
 
-> **Rule:** aws:SourceIp = WHERE API call originates | aws:RequestedRegion = WHERE resource is created
+> **Rules:**
+> - aws:SourceIp = WHERE API call originates (caller's IP)
+> - aws:RequestedRegion = WHERE resource is created
+> - ec2:Region = EC2-specific region control
 
 ## API Gateway Authorization
 
@@ -293,6 +310,35 @@ flowchart TD
 | SSE-KMS (CMK) | Customer CMK | Yes | KMS + key cost |
 | SSE-C | Customer provided | No | Free |
 | Client-side | Customer managed | N/A | Varies |
+
+## KMS Key Types
+
+| Type | Scope | Use Case |
+|------|-------|----------|
+| Single-Region Keys | One region | Most use cases |
+| Multi-Region Keys | Multiple regions | Cross-region replication, DR |
+
+**Multi-Region Keys Benefits:**
+- Same key ID across regions
+- Simplifies S3 Cross-Region Replication for encrypted objects
+- Disaster recovery with encrypted data
+
+> **Rule:** S3 CRR with encryption → SSE-KMS with Multi-Region Keys
+
+## CloudWatch Monitoring Levels
+
+| Level | Interval | Cost |
+|-------|----------|------|
+| Basic | 5 minutes | Free |
+| Detailed | 1 minute | Cost per metric |
+| High-Resolution | Up to 1 second | Custom metrics |
+
+**Needs CloudWatch Agent:**
+- Memory utilization
+- Disk utilization
+- Custom metrics
+
+> **Rule:** "Quick + low maintenance + <5 min intervals" → Enable Detailed Monitoring
 
 ## Trade-off Matrix
 

@@ -215,6 +215,70 @@ S3 (pay per GB stored) < EFS (pay per GB stored) < EBS (pay per GB PROVISIONED)
 | Object Lock | Compliance/legal hold | WORM compliance |
 | Bucket Owner Enforced | Cross-account ownership | Ensure bucket owner owns all objects |
 
+## S3 Object Lock Modes
+
+| Mode | Can Override? | Use Case |
+|------|--------------|----------|
+| Compliance | No (even root) | Regulatory requirements, strictest |
+| Governance | Yes (with permission) | Internal policies, some flexibility |
+
+> **Rule:** WORM + immediate access → S3 Object Lock. Compliance mode = nobody can delete until retention expires.
+
+## Glacier Vault Lock
+
+| Feature | Description |
+|---------|-------------|
+| Immutable | Once locked, policy cannot be changed |
+| WORM | Write Once Read Many |
+| Compliance | For SEC, HIPAA, regulatory requirements |
+
+> **Rule:** WORM + archive/low-cost → Glacier Vault Lock (not Object Lock)
+
+## Storage Gateway Volume Types
+
+| Type | Data Location | Use Case |
+|------|--------------|----------|
+| Stored Volumes | Full data on-prem, backup to S3 | Quick local access, no retrieval fees |
+| Cached Volumes | Hot data on-prem, cold in S3 | Extend capacity, cache frequently accessed |
+
+> **Rule:** "No retrieval fees" + "quick local access" → Stored Volumes. "Extend capacity" → Cached Volumes.
+
+## EFS Throughput Modes
+
+| Mode | Behavior | Best For |
+|------|----------|----------|
+| Bursting | Credits-based, accumulate during low usage | Sporadic, bursty workloads |
+| Provisioned | Fixed throughput (configured) | Consistent high throughput |
+| Elastic | Auto-scales, pay per use | Variable workloads |
+
+## EFS Storage Classes
+
+| Class | Cost | Use Case |
+|-------|------|----------|
+| Standard | Higher | Frequently accessed |
+| Infrequent Access (IA) | Lower (+ retrieval fee) | Rarely accessed |
+
+> **Rule:** "Sporadic bursts" + "low average" + "cost optimization" → Burst mode + IA storage class
+
+## EBS Fast Snapshot Restore
+
+| Without FSR | With FSR |
+|-------------|----------|
+| Lazy loading from S3 | Pre-warmed volumes |
+| Variable initial performance | Full performance immediately |
+| Free | Cost per AZ per snapshot |
+
+> **Rule:** "High consistent I/O immediately" from snapshot → Enable Fast Snapshot Restore
+
+## S3 Global Performance
+
+| Direction | Solution |
+|-----------|----------|
+| Downloads from global locations | CloudFront (edge caching) |
+| Uploads from global locations | S3 Transfer Acceleration |
+
+> **Rule:** Global S3 access = CloudFront (downloads) + S3TA (uploads). Both use edge network.
+
 ## S3 Encryption Options
 
 | Option | Key Management | Audit Trail | Cost |
@@ -285,6 +349,31 @@ Standard → Standard-IA → Intelligent-Tiering → Glacier IR → Glacier FR �
 **Invalid transitions:**
 - ❌ Standard-IA → Standard (cannot go warmer)
 - ❌ Any tier → Intelligent-Tiering (must start there)
+
+## Instance Store vs EBS
+
+| Aspect | Instance Store | EBS |
+|--------|---------------|-----|
+| Persistence | Ephemeral (lost on stop/terminate) | Persistent |
+| IOPS | Very high (NVMe) | Up to 64,000 (io2) |
+| Cost | Included with instance | Per GB provisioned |
+| Use Case | Temp data, caches, replicated data | Databases, boot volumes |
+
+> **Rule:** Highest IOPS + disposable nodes + replicated data → Instance Store
+
+## S3 Cross-Account Object Ownership
+
+| Setting | Behavior |
+|---------|----------|
+| Bucket owner enforced (recommended) | Bucket owner owns all objects |
+| Object writer (legacy) | Uploader owns objects |
+
+**Fix Options:**
+1. Enable "Bucket owner enforced" Object Ownership
+2. Require `bucket-owner-full-control` ACL on PUTs
+3. Bucket policy to deny PUTs without proper ACL
+
+> **Rule:** Cross-account S3 writes → uploader owns by default. Enable "Bucket owner enforced" to fix.
 
 ## Related Decisions
 

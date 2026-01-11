@@ -129,7 +129,30 @@ flowchart TD
 | Transactions | Yes | No |
 | Lua Scripting | Yes | No |
 | Multi-threaded | No (single-threaded) | Yes |
+| Geospatial | Yes (GEOADD, GEORADIUS) | No |
 | Use Case | Complex caching, sessions | Simple key-value |
+
+> **Rule:** "Geospatial data" → Redis (only option)
+
+## Session Management Options
+
+| Solution | Latency | Persistence | Best For |
+|----------|---------|-------------|----------|
+| ElastiCache Redis | Sub-ms | Yes | Distributed sessions, HA |
+| DynamoDB | ~ms | Yes | Simple sessions, serverless |
+| Sticky Sessions | N/A | Instance-local | Single server, not recommended |
+
+> **Rule:** "In-memory" + "distributed" + "session" → ElastiCache Redis. Sticky sessions don't protect against server failure.
+
+## ElastiCache Redis HA/DR
+
+| Configuration | Benefit |
+|---------------|---------|
+| Multi-AZ with Auto-Failover | Minimal downtime, minimal data loss |
+| Read Replicas | Read scaling, manual promotion |
+| Backups (AOF/RDB) | Point-in-time recovery |
+
+> **Rule:** "Minimal downtime" + "minimal data loss" for Redis → Multi-AZ with Auto-Failover
 
 ## Cost Comparison
 

@@ -125,6 +125,29 @@ flowchart TD
 | Kinesis | 1 MB/sec or 1000 records/sec per shard |
 | EventBridge | Very high |
 
+## Kinesis Enhanced Fan-Out
+
+| Mode | Throughput | Latency | Use Case |
+|------|------------|---------|----------|
+| Standard | 2 MB/sec shared across consumers | Higher | Few consumers |
+| Enhanced Fan-Out | 2 MB/sec per consumer | ~70ms | Multiple consumers, consistent performance |
+
+> **Rule:** Multiple Kinesis consumers + performance lag → Enable Enhanced Fan-Out
+
+## S3 Event Integration Patterns
+
+| Pattern | Speed | Complexity |
+|---------|-------|------------|
+| S3 Event → Lambda → Target | Fastest | Low |
+| S3 → EventBridge → Lambda → Target | Fast (more filtering) | Medium |
+| S3 → SNS → Target | Fast | Medium |
+
+**S3 Cannot Directly Invoke:**
+- Kinesis Data Streams
+- Any service other than Lambda, SNS, SQS, EventBridge
+
+> **Rule:** S3 → Kinesis fastest path: S3 Event Notification → Lambda → Kinesis Data Streams
+
 ## Cost Comparison
 
 | Service | Pricing Model | Cost Efficiency |
@@ -227,6 +250,40 @@ Producer → SNS Topic
 - SNS provides fan-out
 - SQS provides durability and buffering per consumer
 - Each consumer processes independently
+
+## Amazon MQ (Protocol Compatibility)
+
+| Protocol | AWS Service | Use Case |
+|----------|-------------|----------|
+| AMQP | Amazon MQ (RabbitMQ) | RabbitMQ migration |
+| MQTT | IoT Core, Amazon MQ | IoT devices |
+| JMS | Amazon MQ (ActiveMQ) | Java messaging apps |
+| Kafka | Amazon MSK | Kafka migration |
+| Proprietary (AWS) | SQS, SNS | New applications |
+
+**Migration Decision:**
+```
+Current protocol?
+├── AMQP/MQTT/JMS → Amazon MQ (drop-in compatible)
+├── Kafka → Amazon MSK
+└── Custom/flexible → SQS/SNS (may need code changes)
+```
+
+> **Rule:** AMQP compatibility + minimal code changes → Amazon MQ
+
+## SNS to Lambda Throttling
+
+| Component | Scales? | Limit |
+|-----------|---------|-------|
+| SNS | Yes | Very high |
+| Lambda | Yes, but | Account concurrency quota |
+
+**When SNS → Lambda fails at high throughput:**
+- SNS scales fine
+- Lambda hits concurrency quota
+- Solution: Contact AWS Support to raise Lambda limit
+
+> **Rule:** SNS delivery issues at high volume → check downstream subscriber limits (Lambda concurrency)
 
 ## Related Decisions
 

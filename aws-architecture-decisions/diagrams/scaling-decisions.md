@@ -223,6 +223,63 @@ Target: Based on acceptable backlog per worker
 | Pending:Wait | Configure instance before in-service |
 | Terminating:Wait | Drain connections before termination |
 
+## ASG Default Termination Policy
+
+Order of operations when ASG needs to terminate an instance:
+
+1. Select AZ with most instances
+2. Find instance with oldest launch template/configuration
+3. If tie, select instance closest to next billing hour
+4. Terminate that instance
+
+> **Rule:** Oldest launch config/template in the most populated AZ gets terminated first.
+
+## Why ASG May Not Terminate "Unhealthy" Instance
+
+| Reason | Explanation |
+|--------|-------------|
+| Health check grace period | Still within grace period window |
+| Instance in Impaired status | AWS infrastructure issue |
+| Minimum instance count | Would go below min capacity |
+| Scale-in protection enabled | Instance protected from termination |
+
+> **Rule:** Grace period is the #1 reason ASG doesn't terminate "unhealthy" instances immediately.
+
+## ASG Health Check Types
+
+| Type | Checks | Use Case |
+|------|--------|----------|
+| EC2 (default) | Is instance running? | Basic, doesn't detect app failures |
+| ELB | Is application healthy? (HTTP) | When using ALB/NLB |
+
+**Common Issue:** ALB marks instance unhealthy, but ASG doesn't replace it.
+**Cause:** ASG using EC2 health check (default), not ELB health check.
+**Fix:** Enable ELB health check on ASG when using load balancer.
+
+> **Rule:** ALB + ASG → Enable ELB health checks on ASG to replace failed apps
+
+## Combined Scaling Strategies
+
+| Pattern | Use Case |
+|---------|----------|
+| Predictive + Target Tracking | Known patterns + unexpected spikes |
+| Scheduled + Target Tracking | Known time patterns + variable load |
+| Step + Target Tracking | Complex thresholds + smooth scaling |
+
+> **Rule:** Predictable patterns + unexpected spikes → Predictive + Target Tracking combined
+
+## ASG High Availability Formula
+
+| Requirement | Minimum Capacity | Why |
+|-------------|------------------|-----|
+| N instances needed | 2N across 2 AZs | Survive AZ failure |
+
+**Example:** Need 2 instances running:
+- Set Min = 4 (2 per AZ)
+- If AZ fails, still have 2 running
+
+> **Rule:** HA requirement + N instances → Min = 2N across 2 AZs
+
 ## Related Decisions
 
 - [Compute Decisions](./compute-decisions.md) - EC2 instance types

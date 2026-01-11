@@ -69,6 +69,13 @@ Use these to quickly eliminate wrong choices:
 | "Resource configuration history" | CloudTrail | AWS Config |
 | "Pod-level AWS permissions" | Node IAM role | IRSA |
 | "S3/DynamoDB private access" | Interface Endpoint | Gateway Endpoint (free) |
+| "Cross-account S3 uploads" | Object writer ownership | Bucket owner enforced |
+| "Snowball to Glacier" | Direct transfer | S3 + lifecycle policy |
+| "VPC to on-prem DNS" | Inbound resolver | Outbound resolver |
+| "Lambda + RDS connection issues" | Direct connection | RDS Proxy |
+| "High IOPS + disposable nodes" | EBS | Instance Store |
+| "Private hosted zone not resolving" | Code fix | Check VPC DNS settings |
+| "ASG not terminating unhealthy" | Configuration issue | Check grace period |
 
 ---
 

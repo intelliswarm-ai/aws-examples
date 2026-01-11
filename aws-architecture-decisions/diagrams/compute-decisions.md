@@ -218,6 +218,22 @@ flowchart TD
 > - Runs first boot only (by default)
 > - Runs as root user
 > - Cloud-init can run on every boot if configured
+> - Can be modified only when instance is stopped
+
+## EC2 Pricing Strategy Summary
+
+| Workload Type | Instance Type | Savings | Commitment |
+|---------------|---------------|---------|------------|
+| Always running, predictable | Reserved Instances | Up to 72% | 1-3 years |
+| Flexible across instance families | Compute Savings Plans | Up to 66% | 1-3 years |
+| Batch, interruptible | Spot Instances | Up to 90% | None |
+| Short-term, unpredictable | On-Demand | 0% | None |
+
+> **Rules:**
+> - Always-on baseline → Reserved Instances
+> - Interruptible batch → Spot Instances
+> - Unknown/variable → On-Demand
+> - Flexibility needed → Compute Savings Plans
 
 ## AMI Capabilities
 

@@ -97,6 +97,30 @@ Find projects by AWS service for quick navigation:
 
 ---
 
+## Architecture Decision Library
+
+A comprehensive knowledge library for making informed AWS architectural decisions. Contains decision trees, trade-off matrices, and elimination rules for choosing the right AWS services.
+
+| Category | Key Decisions |
+|----------|---------------|
+| [Storage](./aws-architecture-decisions/diagrams/storage-decisions.md) | S3 vs EFS vs EBS, FSx family, lifecycle policies |
+| [Compute](./aws-architecture-decisions/diagrams/compute-decisions.md) | Lambda vs Fargate vs EC2, Spot vs Reserved, tenancy |
+| [Database](./aws-architecture-decisions/diagrams/database-decisions.md) | DynamoDB vs RDS vs Aurora, Multi-AZ vs Read Replicas |
+| [Messaging](./aws-architecture-decisions/diagrams/messaging-decisions.md) | SQS vs SNS vs Kinesis, FIFO ordering |
+| [Networking](./aws-architecture-decisions/diagrams/networking-decisions.md) | ALB vs NLB, CloudFront vs Global Accelerator, VPC Endpoints |
+| [Security](./aws-architecture-decisions/diagrams/security-decisions.md) | IAM, SCPs, encryption options, threat detection |
+| [Caching](./aws-architecture-decisions/diagrams/caching-decisions.md) | DAX vs ElastiCache vs CloudFront |
+| [Scaling](./aws-architecture-decisions/diagrams/scaling-decisions.md) | Auto Scaling policies, placement groups |
+| [Migration](./aws-architecture-decisions/diagrams/migration-decisions.md) | DMS, SCT, Snowball, hybrid connectivity |
+| [Analytics](./aws-architecture-decisions/diagrams/analytics-decisions.md) | Athena vs Redshift vs EMR, data lakes |
+| [Containers](./aws-architecture-decisions/diagrams/containers-decisions.md) | ECS vs EKS, Fargate, IRSA |
+| [High Availability](./aws-architecture-decisions/diagrams/high-availability-decisions.md) | DR patterns, Multi-AZ, Aurora Global |
+| [AI & ML](./aws-architecture-decisions/diagrams/ai-ml-decisions.md) | Comprehend, Textract, Rekognition, Bedrock |
+
+[View full decision library →](./aws-architecture-decisions/README.md)
+
+---
+
 ## serverless-api
 
 **Task Automation System** - A serverless task processing pipeline demonstrating core Lambda patterns.
