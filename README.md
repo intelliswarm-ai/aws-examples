@@ -4,7 +4,14 @@ A collection of AWS architectures demonstrating best practices for cloud-native 
 
 ## Author
 
-Created by **Theodoros Messinis**, AWS Certified Solutions Architect. View credentials and certifications on [Credly](https://www.credly.com/users/theodoros-messinis/badges).
+Created by **Theodoros Messinis**, AWS Certified Solutions Architect.
+
+- [LinkedIn](https://www.linkedin.com/in/messinis/)
+- [AWS Certifications (Credly)](https://www.credly.com/users/theodoros-messinis/badges)
+
+## Disclaimer
+
+This project is not officially supported by Amazon Web Services (AWS). It is a product of individual research and is intended for educational and demonstration purposes only. The architectures and code examples provided here represent personal interpretations of AWS best practices and should be reviewed and adapted according to your specific requirements before use in production environments.
 
 ---
 
