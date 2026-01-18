@@ -6,7 +6,7 @@ A collection of AWS architectures demonstrating best practices for cloud-native 
 
 Created by **Theodoros Messinis**, AWS Certified Solutions Architect.
 
-[![AWS Certified Solutions Architect](https://images.credly.com/size/340x340/images/0e284c3f-5164-4b21-8660-0d84737941bc/image.png)](https://www.credly.com/users/theodoros-messinis/badges)
+[![AWS Certified Solutions Architect](https://images.credly.com/size/110x110/images/0e284c3f-5164-4b21-8660-0d84737941bc/image.png)](https://www.credly.com/users/theodoros-messinis/badges)
 
 - [LinkedIn](https://www.linkedin.com/in/messinis/)
 - [AWS Certifications (Credly)](https://www.credly.com/users/theodoros-messinis/badges)
