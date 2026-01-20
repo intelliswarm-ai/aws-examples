@@ -1,0 +1,161 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Lake Formation Configuration for Healthcare Imaging Data Lake
+
+Parameters:
+  Environment:
+    Type: String
+
+  ProjectName:
+    Type: String
+
+  GlueDatabaseName:
+    Type: String
+
+  ImagesBucketArn:
+    Type: String
+
+  MetadataBucketArn:
+    Type: String
+
+  LakeFormationRoleArn:
+    Type: String
+
+  LakeFormationAdminArn:
+    Type: String
+    Default: ''
+
+Conditions:
+  HasAdminArn: !Not [!Equals [!Ref LakeFormationAdminArn, '']]
+
+Resources:
+  # Data Lake Settings
+  DataLakeSettings:
+    Type: AWS::LakeFormation::DataLakeSettings
+    Properties:
+      Admins:
+        - !If
+          - HasAdminArn
+          - DataLakePrincipalIdentifier: !Ref LakeFormationAdminArn
+          - !Ref AWS::NoValue
+
+  # Register Images Bucket as Data Location
+  ImagesDataLocation:
+    Type: AWS::LakeFormation::Resource
+    Properties:
+      ResourceArn: !Ref ImagesBucketArn
+      RoleArn: !Ref LakeFormationRoleArn
+      UseServiceLinkedRole: false
+
+  # Register Metadata Bucket as Data Location
+  MetadataDataLocation:
+    Type: AWS::LakeFormation::Resource
+    Properties:
+      ResourceArn: !Ref MetadataBucketArn
+      RoleArn: !Ref LakeFormationRoleArn
+      UseServiceLinkedRole: false
+
+  # Database Permissions for Lake Formation Role
+  DatabasePermissions:
+    Type: AWS::LakeFormation::Permissions
+    DependsOn:
+      - ImagesDataLocation
+      - MetadataDataLocation
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !Ref LakeFormationRoleArn
+      Resource:
+        DatabaseResource:
+          CatalogId: !Ref AWS::AccountId
+          Name: !Ref GlueDatabaseName
+      Permissions:
+        - ALL
+      PermissionsWithGrantOption:
+        - ALL
+
+  # Table Permissions for Imaging Metadata
+  ImagingTablePermissions:
+    Type: AWS::LakeFormation::Permissions
+    DependsOn: DatabasePermissions
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !Ref LakeFormationRoleArn
+      Resource:
+        TableResource:
+          CatalogId: !Ref AWS::AccountId
+          DatabaseName: !Ref GlueDatabaseName
+          Name: imaging_metadata
+      Permissions:
+        - ALL
+      PermissionsWithGrantOption:
+        - ALL
+
+  # Table Permissions for Clinical Records
+  ClinicalTablePermissions:
+    Type: AWS::LakeFormation::Permissions
+    DependsOn: DatabasePermissions
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !Ref LakeFormationRoleArn
+      Resource:
+        TableResource:
+          CatalogId: !Ref AWS::AccountId
+          DatabaseName: !Ref GlueDatabaseName
+          Name: clinical_records
+      Permissions:
+        - ALL
+      PermissionsWithGrantOption:
+        - ALL
+
+  # Data Cell Filter for Researcher Access - Imaging (excludes PHI columns)
+  ResearcherImagingFilter:
+    Type: AWS::LakeFormation::DataCellsFilter
+    DependsOn: ImagingTablePermissions
+    Properties:
+      TableCatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref GlueDatabaseName
+      TableName: imaging_metadata
+      Name: !Sub '${ProjectName}-researcher-imaging-filter'
+      RowFilter:
+        FilterExpression: 'TRUE'
+      ColumnWildcard:
+        ExcludedColumnNames:
+          - patient_id
+          - dicom_tags
+
+  # Data Cell Filter for Researcher Access - Clinical (excludes PHI columns)
+  ResearcherClinicalFilter:
+    Type: AWS::LakeFormation::DataCellsFilter
+    DependsOn: ClinicalTablePermissions
+    Properties:
+      TableCatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref GlueDatabaseName
+      TableName: clinical_records
+      Name: !Sub '${ProjectName}-researcher-clinical-filter'
+      RowFilter:
+        FilterExpression: 'TRUE'
+      ColumnWildcard:
+        ExcludedColumnNames:
+          - patient_id
+          - physician_id
+          - notes_summary
+
+Outputs:
+  DataLakeSettingsId:
+    Description: Data Lake Settings ID
+    Value: !Ref DataLakeSettings
+
+  ImagesDataLocationArn:
+    Description: ARN of the images data location
+    Value: !Ref ImagesBucketArn
+
+  MetadataDataLocationArn:
+    Description: ARN of the metadata data location
+    Value: !Ref MetadataBucketArn
+
+  ResearcherImagingFilterName:
+    Description: Name of the researcher imaging filter
+    Value: !Sub '${ProjectName}-researcher-imaging-filter'
+
+  ResearcherClinicalFilterName:
+    Description: Name of the researcher clinical filter
+    Value: !Sub '${ProjectName}-researcher-clinical-filter'

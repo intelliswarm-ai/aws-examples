@@ -33,6 +33,7 @@ This project is not officially supported by Amazon Web Services (AWS). It is a p
 | [hybrid-enterprise-app](./hybrid-enterprise-app) | Hybrid Enterprise Inventory System | Java 21 | Elastic Beanstalk, VPN Gateway, S3, CloudWatch | [docs](./hybrid-enterprise-app/docs/BUSINESS_LOGIC.md) |
 | [emr-fraud-detection](./emr-fraud-detection) | ML Fraud Detection with Spark | Python 3.12 | EMR, Spark MLlib, Kinesis, Step Functions, DynamoDB | [docs](./emr-fraud-detection/docs/BUSINESS_LOGIC.md) |
 | [genai-knowledge-assistant](./genai-knowledge-assistant) | RAG Knowledge Base Assistant | Python 3.12 | Bedrock (Claude, Titan), Knowledge Bases, Agents, OpenSearch Serverless | [docs](./genai-knowledge-assistant/docs/BUSINESS_LOGIC.md) |
+| [healthcare-imaging-lake](./healthcare-imaging-lake) | HIPAA-Compliant Healthcare Imaging Data Lake | Python 3.12 | S3, KMS, Glue, Lake Formation, Athena, Lambda | [docs](./healthcare-imaging-lake/docs/BUSINESS_LOGIC.md) |
 
 ---
 
@@ -44,7 +45,7 @@ Find projects by AWS service for quick navigation:
 
 | Service | Projects |
 |---------|----------|
-| **Lambda** | [serverless-api](./serverless-api), [document-processing](./document-processing), [multi-tenant-saas](./multi-tenant-saas), [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform), [banking-transactions](./banking-transactions), [call-center-analytics](./call-center-analytics), [conversational-ai](./conversational-ai), [data-lake-analytics](./data-lake-analytics), [emr-fraud-detection](./emr-fraud-detection), [genai-knowledge-assistant](./genai-knowledge-assistant) |
+| **Lambda** | [serverless-api](./serverless-api), [document-processing](./document-processing), [multi-tenant-saas](./multi-tenant-saas), [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform), [banking-transactions](./banking-transactions), [call-center-analytics](./call-center-analytics), [conversational-ai](./conversational-ai), [data-lake-analytics](./data-lake-analytics), [emr-fraud-detection](./emr-fraud-detection), [genai-knowledge-assistant](./genai-knowledge-assistant), [healthcare-imaging-lake](./healthcare-imaging-lake) |
 | **EMR (Spark)** | [emr-fraud-detection](./emr-fraud-detection) |
 | **Elastic Beanstalk** | [hybrid-enterprise-app](./hybrid-enterprise-app) |
 | **EC2 Auto Scaling** | [banking-transactions](./banking-transactions) |
@@ -65,7 +66,7 @@ Find projects by AWS service for quick navigation:
 | Service | Projects |
 |---------|----------|
 | **DynamoDB** | [serverless-api](./serverless-api), [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform), [banking-transactions](./banking-transactions), [conversational-ai](./conversational-ai), [emr-fraud-detection](./emr-fraud-detection), [genai-knowledge-assistant](./genai-knowledge-assistant) |
-| **S3** | [document-processing](./document-processing), [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform), [call-center-analytics](./call-center-analytics), [data-lake-analytics](./data-lake-analytics), [hybrid-enterprise-app](./hybrid-enterprise-app), [emr-fraud-detection](./emr-fraud-detection), [genai-knowledge-assistant](./genai-knowledge-assistant) |
+| **S3** | [document-processing](./document-processing), [fleet-tracking](./fleet-tracking), [messaging-platform](./messaging-platform), [call-center-analytics](./call-center-analytics), [data-lake-analytics](./data-lake-analytics), [hybrid-enterprise-app](./hybrid-enterprise-app), [emr-fraud-detection](./emr-fraud-detection), [genai-knowledge-assistant](./genai-knowledge-assistant), [healthcare-imaging-lake](./healthcare-imaging-lake) |
 | **OpenSearch** | [call-center-analytics](./call-center-analytics), [genai-knowledge-assistant](./genai-knowledge-assistant) |
 
 ### AI/ML Services
@@ -88,9 +89,9 @@ Find projects by AWS service for quick navigation:
 | Service | Projects |
 |---------|----------|
 | **EMR (Spark MLlib)** | [emr-fraud-detection](./emr-fraud-detection) |
-| **Athena** | [data-lake-analytics](./data-lake-analytics) |
-| **Glue ETL** | [data-lake-analytics](./data-lake-analytics) |
-| **Lake Formation** | [data-lake-analytics](./data-lake-analytics) |
+| **Athena** | [data-lake-analytics](./data-lake-analytics), [healthcare-imaging-lake](./healthcare-imaging-lake) |
+| **Glue ETL** | [data-lake-analytics](./data-lake-analytics), [healthcare-imaging-lake](./healthcare-imaging-lake) |
+| **Lake Formation** | [data-lake-analytics](./data-lake-analytics), [healthcare-imaging-lake](./healthcare-imaging-lake) |
 
 ### Security & Identity
 
@@ -98,7 +99,7 @@ Find projects by AWS service for quick navigation:
 |---------|----------|
 | **Cognito** | [multi-tenant-saas](./multi-tenant-saas) |
 | **WAF** | [multi-tenant-saas](./multi-tenant-saas) |
-| **KMS** | [multi-tenant-saas](./multi-tenant-saas) |
+| **KMS** | [multi-tenant-saas](./multi-tenant-saas), [healthcare-imaging-lake](./healthcare-imaging-lake) |
 | **Secrets Manager** | [multi-tenant-saas](./multi-tenant-saas) |
 | **CloudTrail** | [multi-tenant-saas](./multi-tenant-saas) |
 
@@ -616,6 +617,48 @@ cd genai-knowledge-assistant
 
 ---
 
+## healthcare-imaging-lake
+
+**HIPAA-Compliant Healthcare Imaging Data Lake** - A secure data lake for organizing 10M+ patient medical images and clinical records for ML model training, with fine-grained access control.
+
+### Use Case
+A healthcare ML team needs to organize patient medical imaging data (CT scans, MRIs, X-rays) along with clinical records. The system must be HIPAA-compliant, support multi-modal queries across images and structured data, and enable subset extraction for specific medical conditions (e.g., "all chest X-rays with pneumonia diagnosis").
+
+### Architecture Highlights
+- **S3 with SSE-KMS** encrypted storage for images and metadata
+- **AWS Glue Data Catalog** unified metadata management with crawlers
+- **Lake Formation** fine-grained access control (row-level, cell-level, column-level)
+- **Amazon Athena** SQL queries with partition projection
+- **Data Cell Filters** PHI masking for researcher access
+- **Multi-modal Queries** join imaging and clinical data
+
+### Tech Stack
+- Python 3.12 with type hints
+- Pydantic for data validation
+- AWS Lambda Powertools (logging, tracing, metrics)
+- PySpark for Glue ETL jobs
+- Terraform modular infrastructure (8 modules)
+- CloudFormation nested stacks (8 templates)
+- SAM template for rapid deployment
+
+### Key Features
+- **HIPAA Compliance** - Customer-managed KMS keys with rotation, audit logging
+- **Partition Projection** - No MSCK REPAIR TABLE needed for time-based partitions
+- **Data Cell Filters** - Exclude PHI columns (patient_id, physician_id) for researchers
+- **ML Cohort Extraction** - Named queries for extracting training datasets by condition codes
+- **DICOM Metadata** - Store and query DICOM tags alongside clinical data
+
+### Quick Start
+```bash
+cd healthcare-imaging-lake
+./scripts/build.sh
+./scripts/deploy.sh -e dev
+```
+
+[View full documentation](./healthcare-imaging-lake/README.md) | [Business Logic](./healthcare-imaging-lake/docs/BUSINESS_LOGIC.md)
+
+---
+
 ## Common Patterns
 
 All projects demonstrate:
@@ -654,7 +697,7 @@ All projects demonstrate:
 - Java 21 (Amazon Corretto recommended)
 - Maven 3.9+
 
-### document-processing / multi-tenant-saas / fleet-tracking / messaging-platform / banking-transactions / call-center-analytics / conversational-ai / data-lake-analytics / emr-fraud-detection / genai-knowledge-assistant (Python)
+### document-processing / multi-tenant-saas / fleet-tracking / messaging-platform / banking-transactions / call-center-analytics / conversational-ai / data-lake-analytics / emr-fraud-detection / genai-knowledge-assistant / healthcare-imaging-lake (Python)
 - Python 3.12+
 - pip or uv for package management
 
@@ -833,11 +876,24 @@ aws-prorotypes/
 │   ├── docs/                      # Business logic & cost simulation
 │   ├── scripts/                   # Build/deploy scripts
 │   └── README.md
-└── genai-knowledge-assistant/     # RAG Knowledge Base Assistant
+├── genai-knowledge-assistant/     # RAG Knowledge Base Assistant
+│   ├── src/                       # Python Lambda source
+│   │   ├── common/                # Config, models, exceptions, clients
+│   │   ├── handlers/              # API, query, ingestion, agent, sync
+│   │   └── services/              # Bedrock, embedding, vector store, KB
+│   ├── terraform/                 # Terraform infrastructure (8 modules)
+│   ├── cloudformation/            # CloudFormation nested stacks (8 templates)
+│   ├── sam/                       # SAM template and config
+│   ├── tests/                     # Unit and integration tests
+│   ├── docs/                      # Business logic & cost simulation
+│   ├── scripts/                   # Build/deploy scripts
+│   └── README.md
+└── healthcare-imaging-lake/       # HIPAA-Compliant Healthcare Imaging Data Lake
     ├── src/                       # Python Lambda source
-    │   ├── common/                # Config, models, exceptions, clients
-    │   ├── handlers/              # API, query, ingestion, agent, sync
-    │   └── services/              # Bedrock, embedding, vector store, KB
+    │   ├── common/                # Config, models, exceptions
+    │   ├── handlers/              # API, ingestion, catalog, query
+    │   └── services/              # S3, KMS, Glue, Lake Formation, Athena
+    ├── glue/                      # PySpark ETL scripts
     ├── terraform/                 # Terraform infrastructure (8 modules)
     ├── cloudformation/            # CloudFormation nested stacks (8 templates)
     ├── sam/                       # SAM template and config

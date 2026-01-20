@@ -1,0 +1,366 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudWatch Monitoring for Healthcare Imaging Data Lake
+
+Parameters:
+  Environment:
+    Type: String
+
+  ProjectName:
+    Type: String
+
+  ApiHandlerName:
+    Type: String
+
+  IngestionHandlerName:
+    Type: String
+
+  CatalogHandlerName:
+    Type: String
+
+  QueryHandlerName:
+    Type: String
+
+  AthenaWorkgroupName:
+    Type: String
+
+  ImagesBucketName:
+    Type: String
+
+  GlueCrawlerName:
+    Type: String
+
+  ApiHandlerLogGroup:
+    Type: String
+
+  AlertEmail:
+    Type: String
+    Default: ''
+
+  SNSKMSKeyId:
+    Type: String
+
+  ErrorThreshold:
+    Type: Number
+    Default: 5
+
+  ApiDurationThreshold:
+    Type: Number
+    Default: 5000
+
+  QueryDurationThreshold:
+    Type: Number
+    Default: 120000
+
+  AthenaDataScannedThreshold:
+    Type: Number
+    Default: 107374182400
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, '']]
+
+Resources:
+  # SNS Topic for Alarms
+  AlarmsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-alarms'
+      KmsMasterKeyId: !Ref SNSKMSKeyId
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Email Subscription (if provided)
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref AlarmsTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # CloudWatch Dashboard
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${ProjectName}-${Environment}'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Invocations",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${ApiHandlerName}"],
+                  [".", ".", ".", "${IngestionHandlerName}"],
+                  [".", ".", ".", "${CatalogHandlerName}"],
+                  [".", ".", ".", "${QueryHandlerName}"]
+                ],
+                "period": 300,
+                "stat": "Sum"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Errors",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/Lambda", "Errors", "FunctionName", "${ApiHandlerName}"],
+                  [".", ".", ".", "${IngestionHandlerName}"],
+                  [".", ".", ".", "${CatalogHandlerName}"],
+                  [".", ".", ".", "${QueryHandlerName}"]
+                ],
+                "period": 300,
+                "stat": "Sum"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Duration",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/Lambda", "Duration", "FunctionName", "${ApiHandlerName}"],
+                  [".", ".", ".", "${IngestionHandlerName}"],
+                  [".", ".", ".", "${CatalogHandlerName}"],
+                  [".", ".", ".", "${QueryHandlerName}"]
+                ],
+                "period": 300,
+                "stat": "Average"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Athena Query Execution",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/Athena", "TotalExecutionTime", "WorkGroup", "${AthenaWorkgroupName}"],
+                  [".", "ProcessedBytes", ".", "."]
+                ],
+                "period": 300,
+                "stat": "Average"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "S3 Bucket Metrics",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/S3", "NumberOfObjects", "BucketName", "${ImagesBucketName}", "StorageType", "AllStorageTypes"],
+                  [".", "BucketSizeBytes", ".", ".", ".", "."]
+                ],
+                "period": 86400,
+                "stat": "Average"
+              }
+            }
+          ]
+        }
+
+  # Lambda Error Alarms
+  ApiHandlerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-api-handler-errors'
+      AlarmDescription: API handler error rate exceeded threshold
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: !Ref ErrorThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ApiHandlerName
+      AlarmActions:
+        - !Ref AlarmsTopic
+      OKActions:
+        - !Ref AlarmsTopic
+
+  IngestionHandlerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-ingestion-handler-errors'
+      AlarmDescription: Ingestion handler error rate exceeded threshold
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: !Ref ErrorThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref IngestionHandlerName
+      AlarmActions:
+        - !Ref AlarmsTopic
+      OKActions:
+        - !Ref AlarmsTopic
+
+  QueryHandlerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-query-handler-errors'
+      AlarmDescription: Query handler error rate exceeded threshold
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: !Ref ErrorThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref QueryHandlerName
+      AlarmActions:
+        - !Ref AlarmsTopic
+      OKActions:
+        - !Ref AlarmsTopic
+
+  # Duration Alarms
+  ApiHandlerDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-api-handler-duration'
+      AlarmDescription: API handler duration exceeded threshold
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: !Ref ApiDurationThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ApiHandlerName
+      AlarmActions:
+        - !Ref AlarmsTopic
+      OKActions:
+        - !Ref AlarmsTopic
+
+  QueryHandlerDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-query-handler-duration'
+      AlarmDescription: Query handler duration exceeded threshold
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: !Ref QueryDurationThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref QueryHandlerName
+      AlarmActions:
+        - !Ref AlarmsTopic
+      OKActions:
+        - !Ref AlarmsTopic
+
+  # Athena Data Scanned Alarm (Cost Control)
+  AthenaDataScannedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-athena-data-scanned'
+      AlarmDescription: Athena data scanned exceeded threshold (cost control)
+      MetricName: ProcessedBytes
+      Namespace: AWS/Athena
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: !Ref AthenaDataScannedThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: WorkGroup
+          Value: !Ref AthenaWorkgroupName
+      AlarmActions:
+        - !Ref AlarmsTopic
+      OKActions:
+        - !Ref AlarmsTopic
+
+  # Access Denied Metric Filter
+  AccessDeniedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApiHandlerLogGroup
+      FilterPattern: '{ $.errorCode = "AccessDenied" || $.errorCode = "UnauthorizedAccess" }'
+      MetricTransformations:
+        - MetricName: AccessDeniedCount
+          MetricNamespace: !Sub '${ProjectName}/Security'
+          MetricValue: '1'
+
+  # Access Denied Alarm
+  AccessDeniedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-access-denied'
+      AlarmDescription: Access denied events exceeded threshold - potential security incident
+      MetricName: AccessDeniedCount
+      Namespace: !Sub '${ProjectName}/Security'
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmsTopic
+      OKActions:
+        - !Ref AlarmsTopic
+
+  # PHI Access Metric Filter (HIPAA Audit)
+  PHIAccessMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApiHandlerLogGroup
+      FilterPattern: '{ $.action = "GetPatientData" || $.action = "QueryClinicalRecords" }'
+      MetricTransformations:
+        - MetricName: PHIAccessCount
+          MetricNamespace: !Sub '${ProjectName}/HIPAA'
+          MetricValue: '1'
+
+Outputs:
+  DashboardName:
+    Description: Name of the CloudWatch dashboard
+    Value: !Ref Dashboard
+
+  DashboardArn:
+    Description: ARN of the CloudWatch dashboard
+    Value: !Sub 'arn:aws:cloudwatch::${AWS::AccountId}:dashboard/${Dashboard}'
+
+  AlarmsTopicArn:
+    Description: ARN of the SNS topic for alarms
+    Value: !Ref AlarmsTopic

@@ -1,0 +1,110 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: KMS Key for Healthcare Imaging Data Lake
+
+Parameters:
+  Environment:
+    Type: String
+
+  ProjectName:
+    Type: String
+
+Resources:
+  KMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub 'Customer managed key for ${ProjectName} healthcare imaging data encryption'
+      EnableKeyRotation: true
+      PendingWindowInDays: 30
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: Allow CloudWatch Logs
+            Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: '*'
+            Condition:
+              ArnLike:
+                kms:EncryptionContext:aws:logs:arn: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
+          - Sid: Allow S3 Service
+            Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+          - Sid: Allow Glue Service
+            Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+          - Sid: Allow Athena Service
+            Effect: Allow
+            Principal:
+              Service: athena.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+          - Sid: Allow SNS Service
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Purpose
+          Value: HIPAA-compliant data encryption
+
+  KMSKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${ProjectName}-${Environment}'
+      TargetKeyId: !Ref KMSKey
+
+Outputs:
+  KMSKeyArn:
+    Description: ARN of the KMS key
+    Value: !GetAtt KMSKey.Arn
+
+  KMSKeyId:
+    Description: ID of the KMS key
+    Value: !Ref KMSKey
+
+  KMSKeyAlias:
+    Description: Alias of the KMS key
+    Value: !Ref KMSKeyAlias

@@ -1,0 +1,271 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Lambda Functions for Healthcare Imaging Data Lake
+
+Parameters:
+  Environment:
+    Type: String
+
+  ProjectName:
+    Type: String
+
+  LambdaRoleArn:
+    Type: String
+
+  DeploymentBucket:
+    Type: String
+
+  DeploymentKey:
+    Type: String
+
+  ImagesBucketName:
+    Type: String
+
+  MetadataBucketName:
+    Type: String
+
+  ResultsBucketName:
+    Type: String
+
+  KMSKeyId:
+    Type: String
+
+  GlueDatabaseName:
+    Type: String
+
+  GlueCrawlerName:
+    Type: String
+
+  AthenaWorkgroupName:
+    Type: String
+
+  EnableLakeFormation:
+    Type: String
+    Default: 'true'
+
+  LogRetentionDays:
+    Type: Number
+    Default: 365
+
+  LogsKMSKeyArn:
+    Type: String
+
+Resources:
+  # API Handler Lambda
+  ApiHandler:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-api-handler'
+      Description: Main API handler for healthcare imaging data lake
+      Runtime: python3.12
+      Handler: src.handlers.api_handler.handler
+      Role: !Ref LambdaRoleArn
+      Timeout: 30
+      MemorySize: 512
+      Code:
+        S3Bucket: !Ref DeploymentBucket
+        S3Key: !Ref DeploymentKey
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          IMAGES_BUCKET: !Ref ImagesBucketName
+          METADATA_BUCKET: !Ref MetadataBucketName
+          KMS_KEY_ID: !Ref KMSKeyId
+          GLUE_DATABASE: !Ref GlueDatabaseName
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroupName
+          RESULTS_BUCKET: !Ref ResultsBucketName
+          ENABLE_LAKEFORMATION: !Ref EnableLakeFormation
+          LOG_LEVEL: INFO
+          POWERTOOLS_SERVICE_NAME: healthcare-imaging-lake
+      TracingConfig:
+        Mode: Active
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ApiHandlerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ApiHandler}'
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !Ref LogsKMSKeyArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Ingestion Handler Lambda
+  IngestionHandler:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-ingestion-handler'
+      Description: Handles image and metadata ingestion with encryption
+      Runtime: python3.12
+      Handler: src.handlers.ingestion_handler.handler
+      Role: !Ref LambdaRoleArn
+      Timeout: 300
+      MemorySize: 1024
+      Code:
+        S3Bucket: !Ref DeploymentBucket
+        S3Key: !Ref DeploymentKey
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          IMAGES_BUCKET: !Ref ImagesBucketName
+          METADATA_BUCKET: !Ref MetadataBucketName
+          KMS_KEY_ID: !Ref KMSKeyId
+          GLUE_DATABASE: !Ref GlueDatabaseName
+          LOG_LEVEL: INFO
+          POWERTOOLS_SERVICE_NAME: healthcare-imaging-lake
+      TracingConfig:
+        Mode: Active
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  IngestionHandlerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${IngestionHandler}'
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !Ref LogsKMSKeyArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # S3 Permission for Ingestion Handler
+  IngestionS3Permission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref IngestionHandler
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub 'arn:aws:s3:::${ImagesBucketName}'
+      SourceAccount: !Ref AWS::AccountId
+
+  # Catalog Handler Lambda
+  CatalogHandler:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-catalog-handler'
+      Description: Manages Glue catalog and crawler operations
+      Runtime: python3.12
+      Handler: src.handlers.catalog_handler.handler
+      Role: !Ref LambdaRoleArn
+      Timeout: 60
+      MemorySize: 256
+      Code:
+        S3Bucket: !Ref DeploymentBucket
+        S3Key: !Ref DeploymentKey
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          GLUE_DATABASE: !Ref GlueDatabaseName
+          GLUE_CRAWLER_NAME: !Ref GlueCrawlerName
+          LOG_LEVEL: INFO
+          POWERTOOLS_SERVICE_NAME: healthcare-imaging-lake
+      TracingConfig:
+        Mode: Active
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  CatalogHandlerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${CatalogHandler}'
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !Ref LogsKMSKeyArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Query Handler Lambda
+  QueryHandler:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-query-handler'
+      Description: Executes Athena queries for subset extraction
+      Runtime: python3.12
+      Handler: src.handlers.query_handler.handler
+      Role: !Ref LambdaRoleArn
+      Timeout: 300
+      MemorySize: 512
+      Code:
+        S3Bucket: !Ref DeploymentBucket
+        S3Key: !Ref DeploymentKey
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          GLUE_DATABASE: !Ref GlueDatabaseName
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroupName
+          RESULTS_BUCKET: !Ref ResultsBucketName
+          ENABLE_LAKEFORMATION: !Ref EnableLakeFormation
+          LOG_LEVEL: INFO
+          POWERTOOLS_SERVICE_NAME: healthcare-imaging-lake
+      TracingConfig:
+        Mode: Active
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  QueryHandlerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${QueryHandler}'
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !Ref LogsKMSKeyArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+Outputs:
+  ApiHandlerArn:
+    Description: ARN of the API handler Lambda function
+    Value: !GetAtt ApiHandler.Arn
+
+  ApiHandlerName:
+    Description: Name of the API handler Lambda function
+    Value: !Ref ApiHandler
+
+  ApiHandlerLogGroup:
+    Description: Log group for API handler
+    Value: !Ref ApiHandlerLogGroup
+
+  IngestionHandlerArn:
+    Description: ARN of the ingestion handler Lambda function
+    Value: !GetAtt IngestionHandler.Arn
+
+  IngestionHandlerName:
+    Description: Name of the ingestion handler Lambda function
+    Value: !Ref IngestionHandler
+
+  CatalogHandlerArn:
+    Description: ARN of the catalog handler Lambda function
+    Value: !GetAtt CatalogHandler.Arn
+
+  CatalogHandlerName:
+    Description: Name of the catalog handler Lambda function
+    Value: !Ref CatalogHandler
+
+  QueryHandlerArn:
+    Description: ARN of the query handler Lambda function
+    Value: !GetAtt QueryHandler.Arn
+
+  QueryHandlerName:
+    Description: Name of the query handler Lambda function
+    Value: !Ref QueryHandler

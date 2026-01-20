@@ -1,0 +1,76 @@
+# Healthcare Imaging Data Lake - SAM Configuration
+
+version = 0.1
+
+[default]
+[default.global.parameters]
+stack_name = "healthcare-imaging-lake"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.validate.parameters]
+lint = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+confirm_changeset = true
+resolve_s3 = true
+
+[default.package.parameters]
+resolve_s3 = true
+
+[default.sync.parameters]
+watch = true
+
+[default.local_start_api.parameters]
+warm_containers = "EAGER"
+
+[default.local_start_lambda.parameters]
+warm_containers = "EAGER"
+
+# Development environment
+[dev]
+[dev.deploy.parameters]
+stack_name = "healthcare-imaging-lake-dev"
+s3_prefix = "healthcare-imaging-lake-dev"
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+parameter_overrides = [
+    "Environment=dev",
+    "LogLevel=DEBUG",
+    "EnableLakeFormation=true"
+]
+tags = "Environment=dev Project=healthcare-imaging-lake"
+
+# Staging environment
+[staging]
+[staging.deploy.parameters]
+stack_name = "healthcare-imaging-lake-staging"
+s3_prefix = "healthcare-imaging-lake-staging"
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+parameter_overrides = [
+    "Environment=staging",
+    "LogLevel=INFO",
+    "EnableLakeFormation=true"
+]
+tags = "Environment=staging Project=healthcare-imaging-lake"
+
+# Production environment
+[prod]
+[prod.deploy.parameters]
+stack_name = "healthcare-imaging-lake-prod"
+s3_prefix = "healthcare-imaging-lake-prod"
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+parameter_overrides = [
+    "Environment=prod",
+    "LogLevel=INFO",
+    "EnableLakeFormation=true"
+]
+tags = "Environment=prod Project=healthcare-imaging-lake"

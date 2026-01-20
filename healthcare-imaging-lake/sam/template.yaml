@@ -1,0 +1,375 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Healthcare Imaging Data Lake - Serverless Application
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 30
+    MemorySize: 512
+    Tracing: Active
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: !Ref LogLevel
+        POWERTOOLS_SERVICE_NAME: healthcare-imaging-lake
+        POWERTOOLS_METRICS_NAMESPACE: HealthcareImagingLake
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+
+  LogLevel:
+    Type: String
+    Default: INFO
+    AllowedValues:
+      - DEBUG
+      - INFO
+      - WARNING
+      - ERROR
+
+  ImagesBucketName:
+    Type: String
+    Description: Name of the S3 bucket for images
+
+  MetadataBucketName:
+    Type: String
+    Description: Name of the S3 bucket for metadata
+
+  ResultsBucketName:
+    Type: String
+    Description: Name of the S3 bucket for query results
+
+  KMSKeyId:
+    Type: String
+    Description: ID of the KMS key for encryption
+
+  GlueDatabaseName:
+    Type: String
+    Default: healthcare_imaging
+    Description: Name of the Glue database
+
+  GlueCrawlerName:
+    Type: String
+    Description: Name of the Glue crawler
+
+  AthenaWorkgroupName:
+    Type: String
+    Description: Name of the Athena workgroup
+
+  EnableLakeFormation:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+
+Resources:
+  # API Handler
+  ApiHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'healthcare-imaging-${Environment}-api-handler'
+      Description: Main API handler for healthcare imaging data lake
+      Handler: src.handlers.api_handler.handler
+      CodeUri: ../
+      Environment:
+        Variables:
+          IMAGES_BUCKET: !Ref ImagesBucketName
+          METADATA_BUCKET: !Ref MetadataBucketName
+          KMS_KEY_ID: !Ref KMSKeyId
+          GLUE_DATABASE: !Ref GlueDatabaseName
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroupName
+          RESULTS_BUCKET: !Ref ResultsBucketName
+          ENABLE_LAKEFORMATION: !Ref EnableLakeFormation
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:ListBucket
+              Resource:
+                - !Sub 'arn:aws:s3:::${ImagesBucketName}'
+                - !Sub 'arn:aws:s3:::${ImagesBucketName}/*'
+                - !Sub 'arn:aws:s3:::${MetadataBucketName}'
+                - !Sub 'arn:aws:s3:::${MetadataBucketName}/*'
+                - !Sub 'arn:aws:s3:::${ResultsBucketName}'
+                - !Sub 'arn:aws:s3:::${ResultsBucketName}/*'
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/${KMSKeyId}'
+            - Effect: Allow
+              Action:
+                - glue:GetDatabase
+                - glue:GetTable
+                - glue:GetTables
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - athena:StartQueryExecution
+                - athena:GetQueryExecution
+                - athena:GetQueryResults
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - lakeformation:GetDataAccess
+              Resource: '*'
+      Events:
+        HealthCheck:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /health
+            Method: GET
+        GetImages:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /images
+            Method: GET
+        GetImage:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /images/{image_id}
+            Method: GET
+        Query:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /query
+            Method: POST
+
+  # Ingestion Handler
+  IngestionHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'healthcare-imaging-${Environment}-ingestion-handler'
+      Description: Handles image and metadata ingestion with encryption
+      Handler: src.handlers.ingestion_handler.handler
+      CodeUri: ../
+      Timeout: 300
+      MemorySize: 1024
+      Environment:
+        Variables:
+          IMAGES_BUCKET: !Ref ImagesBucketName
+          METADATA_BUCKET: !Ref MetadataBucketName
+          KMS_KEY_ID: !Ref KMSKeyId
+          GLUE_DATABASE: !Ref GlueDatabaseName
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+                - s3:ListBucket
+              Resource:
+                - !Sub 'arn:aws:s3:::${ImagesBucketName}'
+                - !Sub 'arn:aws:s3:::${ImagesBucketName}/*'
+                - !Sub 'arn:aws:s3:::${MetadataBucketName}'
+                - !Sub 'arn:aws:s3:::${MetadataBucketName}/*'
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/${KMSKeyId}'
+      Events:
+        S3Upload:
+          Type: S3
+          Properties:
+            Bucket: !Ref ImagesBucketRef
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: raw/
+                  - Name: suffix
+                    Value: .dcm
+
+  # Placeholder bucket reference (actual bucket created externally)
+  ImagesBucketRef:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Ref ImagesBucketName
+
+  # Catalog Handler
+  CatalogHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'healthcare-imaging-${Environment}-catalog-handler'
+      Description: Manages Glue catalog and crawler operations
+      Handler: src.handlers.catalog_handler.handler
+      CodeUri: ../
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          GLUE_DATABASE: !Ref GlueDatabaseName
+          GLUE_CRAWLER_NAME: !Ref GlueCrawlerName
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - glue:GetDatabase
+                - glue:GetTable
+                - glue:GetTables
+                - glue:GetPartitions
+                - glue:StartCrawler
+                - glue:GetCrawler
+              Resource: '*'
+      Events:
+        StartCrawler:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /catalog/crawler/start
+            Method: POST
+        GetCrawlerStatus:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /catalog/crawler/status
+            Method: GET
+        ListTables:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /catalog/tables
+            Method: GET
+
+  # Query Handler
+  QueryHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'healthcare-imaging-${Environment}-query-handler'
+      Description: Executes Athena queries for subset extraction
+      Handler: src.handlers.query_handler.handler
+      CodeUri: ../
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          GLUE_DATABASE: !Ref GlueDatabaseName
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroupName
+          RESULTS_BUCKET: !Ref ResultsBucketName
+          ENABLE_LAKEFORMATION: !Ref EnableLakeFormation
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - athena:StartQueryExecution
+                - athena:GetQueryExecution
+                - athena:GetQueryResults
+                - athena:StopQueryExecution
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:ListBucket
+              Resource:
+                - !Sub 'arn:aws:s3:::${ResultsBucketName}'
+                - !Sub 'arn:aws:s3:::${ResultsBucketName}/*'
+            - Effect: Allow
+              Action:
+                - glue:GetDatabase
+                - glue:GetTable
+                - glue:GetPartitions
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - lakeformation:GetDataAccess
+              Resource: '*'
+      Events:
+        ExecuteQuery:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /query/execute
+            Method: POST
+        GetQueryStatus:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /query/{query_id}/status
+            Method: GET
+        GetQueryResults:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /query/{query_id}/results
+            Method: GET
+        ExtractMLCohort:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /query/ml-cohort
+            Method: POST
+
+  # API Gateway
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub 'healthcare-imaging-${Environment}-api'
+      StageName: !Ref Environment
+      TracingEnabled: true
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiGatewayLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","path":"$context.path","status":"$context.status","responseLength":"$context.responseLength"}'
+      MethodSettings:
+        - HttpMethod: '*'
+          ResourcePath: '/*'
+          LoggingLevel: INFO
+          DataTraceEnabled: true
+          MetricsEnabled: true
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: "'*'"
+
+  # API Gateway Log Group
+  ApiGatewayLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/apigateway/healthcare-imaging-${Environment}'
+      RetentionInDays: 365
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+
+  ApiHandlerArn:
+    Description: ARN of the API handler Lambda function
+    Value: !GetAtt ApiHandlerFunction.Arn
+
+  IngestionHandlerArn:
+    Description: ARN of the ingestion handler Lambda function
+    Value: !GetAtt IngestionHandlerFunction.Arn
+
+  CatalogHandlerArn:
+    Description: ARN of the catalog handler Lambda function
+    Value: !GetAtt CatalogHandlerFunction.Arn
+
+  QueryHandlerArn:
+    Description: ARN of the query handler Lambda function
+    Value: !GetAtt QueryHandlerFunction.Arn

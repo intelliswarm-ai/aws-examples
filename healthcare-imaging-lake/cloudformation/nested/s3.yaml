@@ -1,0 +1,276 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: S3 Buckets for Healthcare Imaging Data Lake
+
+Parameters:
+  Environment:
+    Type: String
+
+  ProjectName:
+    Type: String
+
+  KMSKeyArn:
+    Type: String
+
+  LogRetentionDays:
+    Type: Number
+    Default: 365
+
+Resources:
+  # Access Logs Bucket
+  AccessLogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-access-logs-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldLogs
+            Status: Enabled
+            ExpirationInDays: !Ref LogRetentionDays
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  AccessLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AccessLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: S3ServerAccessLogsPolicy
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${AccessLogsBucket.Arn}/*'
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:s3:::${ProjectName}-${Environment}-*'
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  # Images Bucket
+  ImagesBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: AccessLogsBucketPolicy
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-images-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref KMSKeyArn
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: images-bucket/
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 90
+              - StorageClass: GLACIER
+                TransitionInDays: 365
+          - Id: ExpireNoncurrent
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: DataClassification
+          Value: PHI
+
+  ImagesBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ImagesBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyUnencryptedTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt ImagesBucket.Arn
+              - !Sub '${ImagesBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: DenyIncorrectEncryption
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub '${ImagesBucket.Arn}/*'
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: aws:kms
+
+  # Metadata Bucket
+  MetadataBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: AccessLogsBucketPolicy
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-metadata-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref KMSKeyArn
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: metadata-bucket/
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 180
+          - Id: ExpireNoncurrent
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: DataClassification
+          Value: PHI
+
+  MetadataBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref MetadataBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyUnencryptedTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt MetadataBucket.Arn
+              - !Sub '${MetadataBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  # Results Bucket
+  ResultsBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: AccessLogsBucketPolicy
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-results-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref KMSKeyArn
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: results-bucket/
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireQueryResults
+            Status: Enabled
+            ExpirationInDays: 7
+            Prefix: athena-results/
+          - Id: ExpireNoncurrent
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ResultsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ResultsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyUnencryptedTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt ResultsBucket.Arn
+              - !Sub '${ResultsBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+Outputs:
+  ImagesBucketName:
+    Description: Name of the images bucket
+    Value: !Ref ImagesBucket
+
+  ImagesBucketArn:
+    Description: ARN of the images bucket
+    Value: !GetAtt ImagesBucket.Arn
+
+  MetadataBucketName:
+    Description: Name of the metadata bucket
+    Value: !Ref MetadataBucket
+
+  MetadataBucketArn:
+    Description: ARN of the metadata bucket
+    Value: !GetAtt MetadataBucket.Arn
+
+  ResultsBucketName:
+    Description: Name of the results bucket
+    Value: !Ref ResultsBucket
+
+  ResultsBucketArn:
+    Description: ARN of the results bucket
+    Value: !GetAtt ResultsBucket.Arn
+
+  AccessLogsBucketName:
+    Description: Name of the access logs bucket
+    Value: !Ref AccessLogsBucket

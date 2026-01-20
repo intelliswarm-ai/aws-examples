@@ -1,0 +1,238 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: IAM Roles for Healthcare Imaging Data Lake
+
+Parameters:
+  Environment:
+    Type: String
+
+  ProjectName:
+    Type: String
+
+  KMSKeyArn:
+    Type: String
+
+  ImagesBucketArn:
+    Type: String
+
+  MetadataBucketArn:
+    Type: String
+
+  ResultsBucketArn:
+    Type: String
+
+Resources:
+  # Lambda Execution Role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Ref ImagesBucketArn
+                  - !Sub '${ImagesBucketArn}/*'
+                  - !Ref MetadataBucketArn
+                  - !Sub '${MetadataBucketArn}/*'
+                  - !Ref ResultsBucketArn
+                  - !Sub '${ResultsBucketArn}/*'
+        - PolicyName: KMSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:ReEncrypt*
+                  - kms:GenerateDataKey*
+                  - kms:DescribeKey
+                Resource: !Ref KMSKeyArn
+        - PolicyName: GlueAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - glue:GetDatabase
+                  - glue:GetDatabases
+                  - glue:GetTable
+                  - glue:GetTables
+                  - glue:GetPartition
+                  - glue:GetPartitions
+                  - glue:BatchGetPartition
+                  - glue:StartCrawler
+                  - glue:GetCrawler
+                Resource: '*'
+        - PolicyName: AthenaAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:StopQueryExecution
+                  - athena:GetWorkGroup
+                Resource: '*'
+        - PolicyName: LakeFormationAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lakeformation:GetDataAccess
+                Resource: '*'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Glue Service Role
+  GlueServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-glue-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Ref ImagesBucketArn
+                  - !Sub '${ImagesBucketArn}/*'
+                  - !Ref MetadataBucketArn
+                  - !Sub '${MetadataBucketArn}/*'
+                  - !Ref ResultsBucketArn
+                  - !Sub '${ResultsBucketArn}/*'
+        - PolicyName: KMSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:ReEncrypt*
+                  - kms:GenerateDataKey*
+                  - kms:DescribeKey
+                Resource: !Ref KMSKeyArn
+        - PolicyName: LakeFormationAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lakeformation:GetDataAccess
+                Resource: '*'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Lake Formation Service Role
+  LakeFormationServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-lakeformation-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lakeformation.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Ref ImagesBucketArn
+                  - !Sub '${ImagesBucketArn}/*'
+                  - !Ref MetadataBucketArn
+                  - !Sub '${MetadataBucketArn}/*'
+        - PolicyName: KMSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:ReEncrypt*
+                  - kms:GenerateDataKey*
+                  - kms:DescribeKey
+                Resource: !Ref KMSKeyArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+Outputs:
+  LambdaRoleArn:
+    Description: ARN of the Lambda execution role
+    Value: !GetAtt LambdaExecutionRole.Arn
+
+  LambdaRoleName:
+    Description: Name of the Lambda execution role
+    Value: !Ref LambdaExecutionRole
+
+  GlueRoleArn:
+    Description: ARN of the Glue service role
+    Value: !GetAtt GlueServiceRole.Arn
+
+  GlueRoleName:
+    Description: Name of the Glue service role
+    Value: !Ref GlueServiceRole
+
+  LakeFormationRoleArn:
+    Description: ARN of the Lake Formation service role
+    Value: !GetAtt LakeFormationServiceRole.Arn
+
+  LakeFormationRoleName:
+    Description: Name of the Lake Formation service role
+    Value: !Ref LakeFormationServiceRole

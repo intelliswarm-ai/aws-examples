@@ -1,0 +1,97 @@
+# Healthcare Imaging Data Lake - Example Terraform Variables
+# Copy this file to terraform.tfvars and customize for your environment
+
+################################################################################
+# Project Configuration
+################################################################################
+
+project_name = "healthcare-imaging-lake"
+environment  = "dev"
+aws_region   = "us-east-1"
+
+tags = {
+  Owner       = "ml-team"
+  CostCenter  = "healthcare-ml"
+  Application = "imaging-datalake"
+}
+
+################################################################################
+# S3 Configuration
+################################################################################
+
+# Leave empty for auto-generated names with account ID
+images_bucket_name   = ""
+metadata_bucket_name = ""
+results_bucket_name  = ""
+
+enable_s3_versioning     = true
+enable_s3_access_logging = true
+
+s3_lifecycle_rules = {
+  transition_to_ia_days      = 90
+  transition_to_glacier_days = 365
+  expiration_days            = 2555  # 7 years for HIPAA
+}
+
+################################################################################
+# KMS Configuration
+################################################################################
+
+kms_deletion_window = 30
+
+# Add ARNs of IAM users/roles that should administer the KMS key
+kms_admin_arns = [
+  # "arn:aws:iam::123456789012:role/AdminRole",
+]
+
+# Add ARNs of additional principals that need encryption access
+kms_usage_arns = [
+  # "arn:aws:iam::123456789012:role/MLEngineerRole",
+]
+
+################################################################################
+# Glue Configuration
+################################################################################
+
+glue_database       = "healthcare_imaging"
+imaging_table_name  = "imaging_metadata"
+clinical_table_name = "clinical_records"
+
+# Crawler runs every 6 hours
+glue_crawler_schedule = "cron(0 */6 * * ? *)"
+
+################################################################################
+# Lake Formation Configuration
+################################################################################
+
+enable_lakeformation = true
+
+# Add ARNs of Lake Formation administrators
+lakeformation_admin_arns = [
+  # "arn:aws:iam::123456789012:role/DataLakeAdmin",
+]
+
+################################################################################
+# Athena Configuration
+################################################################################
+
+athena_workgroup     = "healthcare_analytics"
+athena_query_timeout = 300
+athena_bytes_limit   = 107374182400  # 100 GB
+
+################################################################################
+# Lambda Configuration
+################################################################################
+
+lambda_runtime     = "python3.12"
+lambda_memory_size = 512
+lambda_timeout     = 60
+log_level          = "INFO"
+
+################################################################################
+# CloudWatch Configuration
+################################################################################
+
+log_retention_days           = 90
+alarm_email                  = ""  # Set to receive alarm notifications
+enable_cloudwatch_dashboards = true

@@ -1,0 +1,267 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Glue Data Catalog for Healthcare Imaging Data Lake
+
+Parameters:
+  Environment:
+    Type: String
+
+  ProjectName:
+    Type: String
+
+  GlueRoleArn:
+    Type: String
+
+  MetadataBucketName:
+    Type: String
+
+  ImagesBucketName:
+    Type: String
+
+  KMSKeyArn:
+    Type: String
+
+Resources:
+  # Glue Database
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Sub '${ProjectName}_${Environment}'
+        Description: Healthcare imaging data lake database
+        LocationUri: !Sub 's3://${MetadataBucketName}/'
+
+  # Imaging Metadata Table
+  ImagingMetadataTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref GlueDatabase
+      TableInput:
+        Name: imaging_metadata
+        Description: Medical imaging metadata with DICOM attributes
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: parquet
+          projection.enabled: 'true'
+          projection.year.type: integer
+          projection.year.range: '2020,2030'
+          projection.month.type: integer
+          projection.month.range: '1,12'
+          projection.month.digits: '2'
+          storage.location.template: !Sub 's3://${MetadataBucketName}/imaging/year=${year}/month=${month}'
+        StorageDescriptor:
+          Columns:
+            - Name: image_id
+              Type: string
+              Comment: Unique image identifier
+            - Name: study_id
+              Type: string
+              Comment: DICOM study identifier
+            - Name: series_id
+              Type: string
+              Comment: DICOM series identifier
+            - Name: patient_id
+              Type: string
+              Comment: Hashed patient identifier
+            - Name: modality
+              Type: string
+              Comment: Imaging modality (CT, MRI, etc.)
+            - Name: body_part
+              Type: string
+              Comment: Body part examined
+            - Name: facility_id
+              Type: string
+              Comment: Healthcare facility identifier
+            - Name: acquisition_date
+              Type: timestamp
+              Comment: Image acquisition timestamp
+            - Name: s3_uri
+              Type: string
+              Comment: S3 URI of the image file
+            - Name: file_size_bytes
+              Type: bigint
+              Comment: Image file size in bytes
+            - Name: image_format
+              Type: string
+              Comment: Image file format
+            - Name: condition_codes
+              Type: array<string>
+              Comment: ICD-10 condition codes
+            - Name: dicom_tags
+              Type: map<string,string>
+              Comment: Additional DICOM metadata
+            - Name: created_at
+              Type: timestamp
+              Comment: Record creation timestamp
+          Location: !Sub 's3://${MetadataBucketName}/imaging/'
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+          Compressed: true
+        PartitionKeys:
+          - Name: year
+            Type: int
+          - Name: month
+            Type: int
+
+  # Clinical Records Table
+  ClinicalRecordsTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref GlueDatabase
+      TableInput:
+        Name: clinical_records
+        Description: De-identified clinical records linked to imaging studies
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: parquet
+          projection.enabled: 'true'
+          projection.year.type: integer
+          projection.year.range: '2020,2030'
+          projection.month.type: integer
+          projection.month.range: '1,12'
+          projection.month.digits: '2'
+          storage.location.template: !Sub 's3://${MetadataBucketName}/clinical/year=${year}/month=${month}'
+        StorageDescriptor:
+          Columns:
+            - Name: record_id
+              Type: string
+              Comment: Unique clinical record identifier
+            - Name: patient_id
+              Type: string
+              Comment: Hashed patient identifier
+            - Name: study_id
+              Type: string
+              Comment: Linked imaging study identifier
+            - Name: diagnosis
+              Type: string
+              Comment: Clinical diagnosis
+            - Name: condition_codes
+              Type: array<string>
+              Comment: ICD-10 condition codes
+            - Name: physician_id
+              Type: string
+              Comment: Treating physician identifier
+            - Name: facility_id
+              Type: string
+              Comment: Healthcare facility identifier
+            - Name: record_date
+              Type: timestamp
+              Comment: Record date
+            - Name: notes_summary
+              Type: string
+              Comment: De-identified notes summary
+            - Name: created_at
+              Type: timestamp
+              Comment: Record creation timestamp
+          Location: !Sub 's3://${MetadataBucketName}/clinical/'
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+          Compressed: true
+        PartitionKeys:
+          - Name: year
+            Type: int
+          - Name: month
+            Type: int
+
+  # Glue Crawler
+  MetadataCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-metadata-crawler'
+      Description: Crawls imaging and clinical metadata
+      Role: !Ref GlueRoleArn
+      DatabaseName: !Ref GlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Sub 's3://${MetadataBucketName}/imaging/'
+          - Path: !Sub 's3://${MetadataBucketName}/clinical/'
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
+      RecrawlPolicy:
+        RecrawlBehavior: CRAWL_NEW_FOLDERS_ONLY
+      Configuration: |
+        {
+          "Version": 1.0,
+          "CrawlerOutput": {
+            "Partitions": { "AddOrUpdateBehavior": "InheritFromTable" }
+          }
+        }
+      Tags:
+        Environment: !Ref Environment
+        Project: !Ref ProjectName
+
+  # Glue ETL Job
+  MetadataETLJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-metadata-etl'
+      Description: ETL job for processing imaging metadata
+      Role: !Ref GlueRoleArn
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub 's3://${MetadataBucketName}/scripts/metadata_crawler.py'
+        PythonVersion: '3'
+      DefaultArguments:
+        '--job-language': python
+        '--job-bookmark-option': job-bookmark-enable
+        '--enable-metrics': 'true'
+        '--enable-spark-ui': 'true'
+        '--enable-continuous-cloudwatch-log': 'true'
+        '--DATABASE_NAME': !Ref GlueDatabase
+        '--METADATA_BUCKET': !Ref MetadataBucketName
+        '--IMAGES_BUCKET': !Ref ImagesBucketName
+      GlueVersion: '4.0'
+      WorkerType: G.1X
+      NumberOfWorkers: 2
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      MaxRetries: 1
+      Timeout: 60
+      SecurityConfiguration: !Ref GlueSecurityConfig
+      Tags:
+        Environment: !Ref Environment
+        Project: !Ref ProjectName
+
+  # Glue Security Configuration
+  GlueSecurityConfig:
+    Type: AWS::Glue::SecurityConfiguration
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-security-config'
+      EncryptionConfiguration:
+        S3Encryptions:
+          - S3EncryptionMode: SSE-KMS
+            KmsKeyArn: !Ref KMSKeyArn
+        CloudWatchEncryption:
+          CloudWatchEncryptionMode: SSE-KMS
+          KmsKeyArn: !Ref KMSKeyArn
+        JobBookmarksEncryption:
+          JobBookmarksEncryptionMode: SSE-KMS
+          KmsKeyArn: !Ref KMSKeyArn
+
+Outputs:
+  DatabaseName:
+    Description: Name of the Glue database
+    Value: !Ref GlueDatabase
+
+  ImagingTableName:
+    Description: Name of the imaging metadata table
+    Value: !Ref ImagingMetadataTable
+
+  ClinicalTableName:
+    Description: Name of the clinical records table
+    Value: !Ref ClinicalRecordsTable
+
+  CrawlerName:
+    Description: Name of the metadata crawler
+    Value: !Ref MetadataCrawler
+
+  ETLJobName:
+    Description: Name of the ETL job
+    Value: !Ref MetadataETLJob

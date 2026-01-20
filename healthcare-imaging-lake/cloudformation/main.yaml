@@ -1,0 +1,288 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Healthcare Imaging Data Lake - HIPAA-compliant data lake for medical imaging
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+
+  ProjectName:
+    Type: String
+    Default: healthcare-imaging-lake
+
+  LogRetentionDays:
+    Type: Number
+    Default: 365
+    AllowedValues:
+      - 30
+      - 60
+      - 90
+      - 180
+      - 365
+      - 730
+
+  EnableLakeFormation:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+
+  LakeFormationAdminArn:
+    Type: String
+    Default: ''
+    Description: ARN of Lake Formation administrator (optional)
+
+  DeploymentBucket:
+    Type: String
+    Description: S3 bucket containing Lambda deployment package
+
+  DeploymentKey:
+    Type: String
+    Default: lambda/healthcare-imaging-lake.zip
+    Description: S3 key for Lambda deployment package
+
+  AlertEmail:
+    Type: String
+    Default: ''
+    Description: Email address for CloudWatch alarms (optional)
+
+Conditions:
+  HasLakeFormationAdmin: !Not [!Equals [!Ref LakeFormationAdminArn, '']]
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, '']]
+  EnableLakeFormationCondition: !Equals [!Ref EnableLakeFormation, 'true']
+
+Resources:
+  # KMS Stack
+  KMSStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${DeploymentBucket}.s3.amazonaws.com/cloudformation/nested/kms.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # S3 Stack
+  S3Stack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: KMSStack
+    Properties:
+      TemplateURL: !Sub 'https://${DeploymentBucket}.s3.amazonaws.com/cloudformation/nested/s3.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+        KMSKeyArn: !GetAtt KMSStack.Outputs.KMSKeyArn
+        LogRetentionDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # IAM Stack
+  IAMStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - KMSStack
+      - S3Stack
+    Properties:
+      TemplateURL: !Sub 'https://${DeploymentBucket}.s3.amazonaws.com/cloudformation/nested/iam.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+        KMSKeyArn: !GetAtt KMSStack.Outputs.KMSKeyArn
+        ImagesBucketArn: !GetAtt S3Stack.Outputs.ImagesBucketArn
+        MetadataBucketArn: !GetAtt S3Stack.Outputs.MetadataBucketArn
+        ResultsBucketArn: !GetAtt S3Stack.Outputs.ResultsBucketArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Glue Stack
+  GlueStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - IAMStack
+      - S3Stack
+    Properties:
+      TemplateURL: !Sub 'https://${DeploymentBucket}.s3.amazonaws.com/cloudformation/nested/glue.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+        GlueRoleArn: !GetAtt IAMStack.Outputs.GlueRoleArn
+        MetadataBucketName: !GetAtt S3Stack.Outputs.MetadataBucketName
+        ImagesBucketName: !GetAtt S3Stack.Outputs.ImagesBucketName
+        KMSKeyArn: !GetAtt KMSStack.Outputs.KMSKeyArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Lake Formation Stack
+  LakeFormationStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: EnableLakeFormationCondition
+    DependsOn:
+      - GlueStack
+      - IAMStack
+    Properties:
+      TemplateURL: !Sub 'https://${DeploymentBucket}.s3.amazonaws.com/cloudformation/nested/lakeformation.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+        GlueDatabaseName: !GetAtt GlueStack.Outputs.DatabaseName
+        ImagesBucketArn: !GetAtt S3Stack.Outputs.ImagesBucketArn
+        MetadataBucketArn: !GetAtt S3Stack.Outputs.MetadataBucketArn
+        LakeFormationRoleArn: !GetAtt IAMStack.Outputs.LakeFormationRoleArn
+        LakeFormationAdminArn: !If [HasLakeFormationAdmin, !Ref LakeFormationAdminArn, !Ref 'AWS::NoValue']
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Athena Stack
+  AthenaStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - GlueStack
+      - S3Stack
+    Properties:
+      TemplateURL: !Sub 'https://${DeploymentBucket}.s3.amazonaws.com/cloudformation/nested/athena.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+        GlueDatabaseName: !GetAtt GlueStack.Outputs.DatabaseName
+        ResultsBucketName: !GetAtt S3Stack.Outputs.ResultsBucketName
+        KMSKeyArn: !GetAtt KMSStack.Outputs.KMSKeyArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Lambda Stack
+  LambdaStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - IAMStack
+      - S3Stack
+      - GlueStack
+      - AthenaStack
+    Properties:
+      TemplateURL: !Sub 'https://${DeploymentBucket}.s3.amazonaws.com/cloudformation/nested/lambda.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+        LambdaRoleArn: !GetAtt IAMStack.Outputs.LambdaRoleArn
+        DeploymentBucket: !Ref DeploymentBucket
+        DeploymentKey: !Ref DeploymentKey
+        ImagesBucketName: !GetAtt S3Stack.Outputs.ImagesBucketName
+        MetadataBucketName: !GetAtt S3Stack.Outputs.MetadataBucketName
+        ResultsBucketName: !GetAtt S3Stack.Outputs.ResultsBucketName
+        KMSKeyId: !GetAtt KMSStack.Outputs.KMSKeyId
+        GlueDatabaseName: !GetAtt GlueStack.Outputs.DatabaseName
+        GlueCrawlerName: !GetAtt GlueStack.Outputs.CrawlerName
+        AthenaWorkgroupName: !GetAtt AthenaStack.Outputs.WorkgroupName
+        EnableLakeFormation: !Ref EnableLakeFormation
+        LogRetentionDays: !Ref LogRetentionDays
+        LogsKMSKeyArn: !GetAtt KMSStack.Outputs.KMSKeyArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # CloudWatch Stack
+  CloudWatchStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - LambdaStack
+      - AthenaStack
+    Properties:
+      TemplateURL: !Sub 'https://${DeploymentBucket}.s3.amazonaws.com/cloudformation/nested/cloudwatch.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        ProjectName: !Ref ProjectName
+        ApiHandlerName: !GetAtt LambdaStack.Outputs.ApiHandlerName
+        IngestionHandlerName: !GetAtt LambdaStack.Outputs.IngestionHandlerName
+        CatalogHandlerName: !GetAtt LambdaStack.Outputs.CatalogHandlerName
+        QueryHandlerName: !GetAtt LambdaStack.Outputs.QueryHandlerName
+        AthenaWorkgroupName: !GetAtt AthenaStack.Outputs.WorkgroupName
+        ImagesBucketName: !GetAtt S3Stack.Outputs.ImagesBucketName
+        GlueCrawlerName: !GetAtt GlueStack.Outputs.CrawlerName
+        ApiHandlerLogGroup: !GetAtt LambdaStack.Outputs.ApiHandlerLogGroup
+        AlertEmail: !If [HasAlertEmail, !Ref AlertEmail, !Ref 'AWS::NoValue']
+        SNSKMSKeyId: !GetAtt KMSStack.Outputs.KMSKeyId
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+Outputs:
+  ImagesBucketName:
+    Description: Name of the images S3 bucket
+    Value: !GetAtt S3Stack.Outputs.ImagesBucketName
+    Export:
+      Name: !Sub '${AWS::StackName}-ImagesBucket'
+
+  MetadataBucketName:
+    Description: Name of the metadata S3 bucket
+    Value: !GetAtt S3Stack.Outputs.MetadataBucketName
+    Export:
+      Name: !Sub '${AWS::StackName}-MetadataBucket'
+
+  ResultsBucketName:
+    Description: Name of the results S3 bucket
+    Value: !GetAtt S3Stack.Outputs.ResultsBucketName
+    Export:
+      Name: !Sub '${AWS::StackName}-ResultsBucket'
+
+  KMSKeyArn:
+    Description: ARN of the KMS key
+    Value: !GetAtt KMSStack.Outputs.KMSKeyArn
+    Export:
+      Name: !Sub '${AWS::StackName}-KMSKey'
+
+  GlueDatabaseName:
+    Description: Name of the Glue database
+    Value: !GetAtt GlueStack.Outputs.DatabaseName
+    Export:
+      Name: !Sub '${AWS::StackName}-GlueDatabase'
+
+  AthenaWorkgroupName:
+    Description: Name of the Athena workgroup
+    Value: !GetAtt AthenaStack.Outputs.WorkgroupName
+    Export:
+      Name: !Sub '${AWS::StackName}-AthenaWorkgroup'
+
+  ApiHandlerArn:
+    Description: ARN of the API handler Lambda function
+    Value: !GetAtt LambdaStack.Outputs.ApiHandlerArn
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiHandler'
+
+  QueryHandlerArn:
+    Description: ARN of the query handler Lambda function
+    Value: !GetAtt LambdaStack.Outputs.QueryHandlerArn
+    Export:
+      Name: !Sub '${AWS::StackName}-QueryHandler'
+
+  DashboardName:
+    Description: Name of the CloudWatch dashboard
+    Value: !GetAtt CloudWatchStack.Outputs.DashboardName
+    Export:
+      Name: !Sub '${AWS::StackName}-Dashboard'

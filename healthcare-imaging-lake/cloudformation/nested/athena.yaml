@@ -1,0 +1,178 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Athena Workgroup for Healthcare Imaging Data Lake
+
+Parameters:
+  Environment:
+    Type: String
+
+  ProjectName:
+    Type: String
+
+  GlueDatabaseName:
+    Type: String
+
+  ResultsBucketName:
+    Type: String
+
+  KMSKeyArn:
+    Type: String
+
+  BytesScannedCutoff:
+    Type: Number
+    Default: 107374182400
+    Description: Maximum bytes scanned per query (default 100GB)
+
+Resources:
+  # Athena Workgroup
+  AthenaWorkgroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}'
+      Description: Workgroup for healthcare imaging queries
+      State: ENABLED
+      WorkGroupConfiguration:
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+        BytesScannedCutoffPerQuery: !Ref BytesScannedCutoff
+        ResultConfiguration:
+          OutputLocation: !Sub 's3://${ResultsBucketName}/athena-results/'
+          EncryptionConfiguration:
+            EncryptionOption: SSE_KMS
+            KmsKey: !Ref KMSKeyArn
+        EngineVersion:
+          SelectedEngineVersion: 'Athena engine version 3'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Named Query: Imaging by Modality
+  ImagingByModalityQuery:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Name: !Sub '${ProjectName}-imaging-by-modality'
+      Description: Query imaging data by modality and body part
+      Database: !Ref GlueDatabaseName
+      WorkGroup: !Ref AthenaWorkgroup
+      QueryString: |
+        SELECT
+            modality,
+            body_part,
+            COUNT(*) as image_count,
+            COUNT(DISTINCT patient_id) as patient_count
+        FROM imaging_metadata
+        WHERE year = ? AND month = ?
+        GROUP BY modality, body_part
+        ORDER BY image_count DESC
+
+  # Named Query: Imaging by Condition
+  ImagingByConditionQuery:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Name: !Sub '${ProjectName}-imaging-by-condition'
+      Description: Query imaging data by condition codes
+      Database: !Ref GlueDatabaseName
+      WorkGroup: !Ref AthenaWorkgroup
+      QueryString: |
+        SELECT
+            image_id,
+            study_id,
+            s3_uri,
+            modality,
+            body_part,
+            condition_codes
+        FROM imaging_metadata
+        WHERE CARDINALITY(ARRAY_INTERSECT(condition_codes, ARRAY[?])) > 0
+        LIMIT 1000
+
+  # Named Query: ML Cohort Extraction
+  MLCohortQuery:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Name: !Sub '${ProjectName}-ml-cohort'
+      Description: Extract ML training cohort with positive and negative samples
+      Database: !Ref GlueDatabaseName
+      WorkGroup: !Ref AthenaWorkgroup
+      QueryString: |
+        WITH positive AS (
+            SELECT image_id, s3_uri, modality, body_part, condition_codes, 'positive' as label
+            FROM imaging_metadata
+            WHERE CARDINALITY(ARRAY_INTERSECT(condition_codes, ARRAY[?])) > 0
+            LIMIT ?
+        ),
+        negative AS (
+            SELECT image_id, s3_uri, modality, body_part, condition_codes, 'negative' as label
+            FROM imaging_metadata
+            WHERE CARDINALITY(ARRAY_INTERSECT(condition_codes, ARRAY[?])) = 0
+            LIMIT ?
+        )
+        SELECT * FROM positive
+        UNION ALL
+        SELECT * FROM negative
+
+  # Named Query: Facility Summary
+  FacilitySummaryQuery:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Name: !Sub '${ProjectName}-facility-summary'
+      Description: Summary of imaging data by facility
+      Database: !Ref GlueDatabaseName
+      WorkGroup: !Ref AthenaWorkgroup
+      QueryString: |
+        SELECT
+            facility_id,
+            modality,
+            COUNT(*) as image_count,
+            SUM(file_size_bytes) as total_bytes,
+            MIN(acquisition_date) as earliest_image,
+            MAX(acquisition_date) as latest_image
+        FROM imaging_metadata
+        WHERE year >= ? AND year <= ?
+        GROUP BY facility_id, modality
+        ORDER BY image_count DESC
+
+  # Named Query: Clinical Join
+  ClinicalJoinQuery:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Name: !Sub '${ProjectName}-clinical-join'
+      Description: Join imaging and clinical data for comprehensive analysis
+      Database: !Ref GlueDatabaseName
+      WorkGroup: !Ref AthenaWorkgroup
+      QueryString: |
+        SELECT
+            i.image_id,
+            i.study_id,
+            i.modality,
+            i.body_part,
+            i.s3_uri,
+            c.diagnosis,
+            c.condition_codes as clinical_conditions,
+            c.record_date
+        FROM imaging_metadata i
+        INNER JOIN clinical_records c
+            ON i.study_id = c.study_id
+        WHERE i.modality = ?
+        LIMIT 1000
+
+Outputs:
+  WorkgroupName:
+    Description: Name of the Athena workgroup
+    Value: !Ref AthenaWorkgroup
+
+  WorkgroupArn:
+    Description: ARN of the Athena workgroup
+    Value: !Sub 'arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${AthenaWorkgroup}'
+
+  OutputLocation:
+    Description: S3 location for query results
+    Value: !Sub 's3://${ResultsBucketName}/athena-results/'
+
+  ImagingByModalityQueryId:
+    Description: ID of the imaging by modality named query
+    Value: !Ref ImagingByModalityQuery
+
+  MLCohortQueryId:
+    Description: ID of the ML cohort extraction named query
+    Value: !Ref MLCohortQuery
